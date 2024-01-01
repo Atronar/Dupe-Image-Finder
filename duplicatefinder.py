@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import BinaryIO, Iterable
 import cv2
 from cv2.typing import MatLike
+import numpy as np
 import matplotlib.pyplot as plt
 
 Vector = tuple[float, float, float, float, float]
@@ -52,15 +53,17 @@ def intensities(image_path: str|Path|BinaryIO) -> Vector:
     # Вектор, характеризующий изображение
     return average_intensity, nw_intensity, ne_intensity, sw_intensity, se_intensity
 
-def rect_sum(rect: MatLike) -> float:
+def rect_sum(rect: MatLike) -> np.floating:
     '''Координата вектора — средняя относительная яркость
     '''
-    sums = cv2.sumElems(rect)
-    r = (sums[0] / (rect.shape[0] * rect.shape[1])) * 0.212656
-    g = (sums[1] / (rect.shape[0] * rect.shape[1])) * 0.715158
-    b = (sums[2] / (rect.shape[0] * rect.shape[1])) * 0.072186
+    # Коэффициенты яркости Y преобразования sRGB -> xyY для компонент RGB
+    coefficients = np.array([0.212656, 0.715158, 0.072186], np.float32)
 
-    return round((r + g + b) / 3, 6)
+    sums: np.floating = np.sum(rect, axis=(0, 1))
+    intensity = (sums / (rect.shape[0] * rect.shape[1])) * coefficients
+    avg_intensity: np.floating = round(intensity.mean(), 6)
+
+    return avg_intensity
 
 def intensities_iter(image_list: Iterable[str|Path|BinaryIO]):
     '''Итератор, возвращающий вектора для набора полученных изображений
