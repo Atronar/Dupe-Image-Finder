@@ -83,17 +83,24 @@ def is_similar(vector1: Vector, vector2: Vector, threshold: Real=0.1) -> bool:
     threshold: уровень разницы, больше которого вектора считаются разными
     Возвращается bool
     '''
-    return True if similarity(vector1,vector2)<threshold else False
+    return similarity(vector1,vector2) < threshold
 
-def similarity_images(image1: str|Path|BinaryIO, image2: str|Path|BinaryIO) -> float:
+def similarity_images(
+        image1: str|Path|BinaryIO,
+        image2: str|Path|BinaryIO
+    ) -> float:
     '''Уровень похожести между изображениями.
     0 - идентичные, 1 - максимально разные
     '''
     return similarity(intensities(image1), intensities(image2))
 
-def is_similar_images(image1: str|Path|BinaryIO, image2:str|Path|BinaryIO, threshold: Real=0.1) -> bool:
+def is_similar_images(
+        image1: str|Path|BinaryIO,
+        image2: str|Path|BinaryIO,
+        threshold: Real = 0.1
+    ) -> bool:
     '''Похожи ли два изобоажения
     threshold: уровень разницы, больше которого изображения считаются разными
     Возвращается bool
     '''
-    return True if similarity_images(image1, image2)<threshold else False
+    return similarity_images(image1, image2) < threshold
