@@ -71,13 +71,17 @@ def intensities_iter(image_list: Iterable[str|Path|BinaryIO]):
     for image in image_list:
         yield intensities(image)
 
-def similarity(vector1: Vector, vector2: Vector) -> float:
+def similarity(vector1: Vector, vector2: Vector) -> np.floating:
     '''Уровень похожести между векторами.
     0 - идентичные, 1 - максимально разные
     '''
-    distance: float = sum(map(lambda x1,x2:(x1-x2)**2,vector1,vector2))**.5
-    norm1: float = sum(x**2 for x in vector1)**.5
-    norm2: float = sum(x**2 for x in vector2)**.5
+    # Преобразование необходимо для вычисления разницы векторов
+    vector1 = np.array(vector1) if not isinstance(vector1, np.ndarray) else vector1
+    vector2 = np.array(vector2) if not isinstance(vector2, np.ndarray) else vector2
+
+    distance = np.linalg.norm(vector1 - vector2)
+    norm1 = np.linalg.norm(vector1)
+    norm2 = np.linalg.norm(vector2)
 
     return distance/(norm1+norm2)
 
@@ -91,7 +95,7 @@ def is_similar(vector1: Vector, vector2: Vector, threshold: Real=0.1) -> bool:
 def similarity_images(
         image1: str|Path|BinaryIO,
         image2: str|Path|BinaryIO
-    ) -> float:
+    ) -> np.floating:
     '''Уровень похожести между изображениями.
     0 - идентичные, 1 - максимально разные
     '''
