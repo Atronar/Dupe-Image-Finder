@@ -9,7 +9,7 @@ similarity_images() указывает уровень близости межд�
 is_similar_images() и is_similar()
 которые вернут булево значение "похоже/не похоже" для двух изображений или векторов соответственно
 '''
-from numbers import Number
+from numbers import Real
 from pathlib import Path
 from typing import BinaryIO, Iterable
 import cv2
@@ -78,7 +78,7 @@ def similarity(vector1: Vector, vector2: Vector) -> float:
 
     return distance/(norm1+norm2)
 
-def is_similar(vector1: Vector, vector2: Vector, threshold: Number=0.1) -> bool:
+def is_similar(vector1: Vector, vector2: Vector, threshold: Real=0.1) -> bool:
     '''Похожи ли два вектора
     threshold: уровень разницы, больше которого вектора считаются разными
     Возвращается bool
@@ -91,7 +91,7 @@ def similarity_images(image1: str|Path|BinaryIO, image2: str|Path|BinaryIO) -> f
     '''
     return similarity(intensities(image1), intensities(image2))
 
-def is_similar_images(image1: str|Path|BinaryIO, image2:str|Path|BinaryIO, threshold: Number=0.1) -> bool:
+def is_similar_images(image1: str|Path|BinaryIO, image2:str|Path|BinaryIO, threshold: Real=0.1) -> bool:
     '''Похожи ли два изобоажения
     threshold: уровень разницы, больше которого изображения считаются разными
     Возвращается bool
