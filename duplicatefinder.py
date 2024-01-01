@@ -56,9 +56,9 @@ def rect_sum(rect: MatLike) -> float:
     '''Координата вектора — средняя относительная яркость 
     '''
     sums = cv2.sumElems(rect)
-    r = (sums[0] / (rect.shape[0] * rect.shape[1])) * 0.2126
-    g = (sums[1] / (rect.shape[0] * rect.shape[1])) * 0.7152
-    b = (sums[2] / (rect.shape[0] * rect.shape[1])) * 0.0772
+    r = (sums[0] / (rect.shape[0] * rect.shape[1])) * 0.212656
+    g = (sums[1] / (rect.shape[0] * rect.shape[1])) * 0.715158
+    b = (sums[2] / (rect.shape[0] * rect.shape[1])) * 0.072186
 
     return round((r + g + b) / 3, 6)
 
