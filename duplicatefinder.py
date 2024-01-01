@@ -22,9 +22,9 @@ def intensities(image_path: str|Path|BinaryIO) -> Vector:
     '''
     https://gist.github.com/liamwhite/b023cdba4738e911293a8c610b98f987
     Алгоритм основан на анализе средней интенсивности изображения и его четвертей
-    
+
     image_path: путь к изображению
-    
+
     Возвращается вектор, соответствующий изображению, полученному на входе
     В принципе, можно получать и одномерные вектора, но меньшая размерность приводит к тому,
     что вектора чаще будут считаться похожими
@@ -53,7 +53,7 @@ def intensities(image_path: str|Path|BinaryIO) -> Vector:
     return average_intensity, nw_intensity, ne_intensity, sw_intensity, se_intensity
 
 def rect_sum(rect: MatLike) -> float:
-    '''Координата вектора — средняя относительная яркость 
+    '''Координата вектора — средняя относительная яркость
     '''
     sums = cv2.sumElems(rect)
     r = (sums[0] / (rect.shape[0] * rect.shape[1])) * 0.212656
