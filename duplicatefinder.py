@@ -16,7 +16,7 @@ import cv2
 from cv2.typing import MatLike
 import numpy as np
 import numpy.typing as npt
-import matplotlib.pyplot as plt
+import PIL.Image as pil
 
 Vector = npt.NDArray[np.float64]
 
@@ -35,7 +35,7 @@ def intensities(image_path: str|Path|BinaryIO, partition_level: int = 2) -> Vect
     что вектора чаще будут считаться похожими
     '''
     # Существует проблема с OpenCV, не позволяющая работать с файлами вне рабочей директории
-    image = plt.imread(image_path, 0)
+    image = np.array(pil.open(image_path))
     image = image[..., ::-1]
     #image = cv2.imread(image_path,cv2.IMREAD_COLOR)
     image = cv2.GaussianBlur(image, (3,3), 0)
