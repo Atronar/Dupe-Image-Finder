@@ -97,7 +97,7 @@ def intensities_iter(image_list: Iterable[str|Path|BinaryIO]):
     for image in image_list:
         yield intensities(image)
 
-def similarity(vector1: Vector, vector2: Vector) -> np.floating:
+def similarity(vector1: Vector|tuple|list, vector2: Vector|tuple|list) -> np.floating:
     '''Уровень похожести между векторами.
     0 - идентичные, 1 - максимально разные
     '''
