@@ -11,9 +11,9 @@ Dupe Image Finder
 [intensities(image_path)](#intensities)<br>
 [intensities_iter(image_list)](#intensities_iter)<br>
 [similarity(vector1, vector2)](#similarity)<br>
-[is_similar(vector1,vector2,threshold=0.1)](#is_similar)<br>
+[is_similar(vector1, vector2, threshold=0.1)](#is_similar)<br>
 [similarity_images(image1, image2)](#similarity_images)<br>
-[is_similar_images(image1,image2,threshold=0.1)](#is_similar_images)<br>
+[is_similar_images(image1, image2, threshold=0.1)](#is_similar_images)<br>
 
 #### intensities
 -----
