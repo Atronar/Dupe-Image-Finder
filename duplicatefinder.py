@@ -15,11 +15,12 @@ from typing import BinaryIO, Iterable
 import cv2
 from cv2.typing import MatLike
 import numpy as np
+import numpy.typing as npt
 import matplotlib.pyplot as plt
 
-Vector = tuple[float, float, float, float, float]
+Vector = npt.NDArray[np.float64]
 
-def intensities(image_path: str|Path|BinaryIO) -> Vector:
+def intensities(image_path: str|Path|BinaryIO, partition_level: int = 2) -> Vector:
     '''
     https://gist.github.com/liamwhite/b023cdba4738e911293a8c610b98f987
     Алгоритм основан на анализе средней интенсивности изображения и его четвертей
@@ -27,6 +28,9 @@ def intensities(image_path: str|Path|BinaryIO) -> Vector:
     image_path: путь к изображению
 
     Возвращается вектор, соответствующий изображению, полученному на входе
+    
+    partition_level устанавливает размерность вектора, которая будет равна
+    sum{n=1,partition_level}(n^2)
     В принципе, можно получать и одномерные вектора, но меньшая размерность приводит к тому,
     что вектора чаще будут считаться похожими
     '''
@@ -36,22 +40,40 @@ def intensities(image_path: str|Path|BinaryIO) -> Vector:
     #image = cv2.imread(image_path,cv2.IMREAD_COLOR)
     image = cv2.GaussianBlur(image, (3,3), 0)
 
-    half_x = round(image.shape[1] / 2)
-    half_y = round(image.shape[0] / 2)
+    rectangles = get_rectangles_iter(image, partition_level)
 
-    nw_rect = image[0:half_y, 0:half_x]
-    ne_rect = image[0:half_y, (half_x + 1):image.shape[1]]
-    sw_rect = image[(half_y + 1):image.shape[0], 0:half_x]
-    se_rect = image[(half_y + 1):image.shape[0], (half_x + 1):image.shape[1]]
-
-    average_intensity = rect_sum(image)
-    nw_intensity = rect_sum(nw_rect)
-    ne_intensity = rect_sum(ne_rect)
-    sw_intensity = rect_sum(sw_rect)
-    se_intensity = rect_sum(se_rect)
+    intensities_list = map(rect_sum, rectangles)
 
     # Вектор, характеризующий изображение
-    return average_intensity, nw_intensity, ne_intensity, sw_intensity, se_intensity
+    return np.fromiter(intensities_list, dtype=np.float64)
+
+def division_on_partitions_iter(image: MatLike, side_partitions_num: int = 2):
+    '''Разбиение изображения равномерной сеткой на side_partitions_num^2 частей
+    '''
+    # Чистые размеры части без округлений
+    partition_x_size_raw = image.shape[1] / side_partitions_num
+    partition_y_size_raw = image.shape[0] / side_partitions_num
+
+    for partition_y_num in range(side_partitions_num):
+        for partition_x_num in range(side_partitions_num):
+            # Координаты верхнего левого...
+            x_start = round(partition_x_num * partition_x_size_raw)
+            y_start = round(partition_y_num * partition_y_size_raw)
+            # ...и нижнего правого углов
+            x_end = round((partition_x_num + 1) * partition_x_size_raw)
+            y_end = round((partition_y_num + 1) * partition_y_size_raw)
+            # Возврат текущей части
+            yield image[y_start:y_end, x_start:x_end]
+
+def get_rectangles_iter(image: MatLike, partition_level: int = 2):
+    '''Последовательное всё более дробное разбиение изображения на части и получение этих частей.
+    Разбиение идёт от возврата самого изображения до сетки со стороной partition_level частей
+    '''
+    for current_partition_level in range(partition_level):
+        yield from division_on_partitions_iter(
+            image,
+            side_partitions_num=current_partition_level + 1
+        )
 
 def rect_sum(rect: MatLike) -> np.floating:
     '''Координата вектора — средняя относительная яркость
@@ -59,7 +81,11 @@ def rect_sum(rect: MatLike) -> np.floating:
     # Коэффициенты яркости Y преобразования sRGB -> xyY для компонент RGB
     coefficients = np.array([0.212656, 0.715158, 0.072186], np.float32)
 
-    sums: np.floating = np.sum(rect, axis=(0, 1))
+    sums: npt.NDArray[np.generic]|np.generic = np.sum(rect, axis=(0, 1))
+    if hasattr(sums, '__len__') and len(sums)>3:
+        sums = sums[-3:]
+        # При использовании cv2.imread вместо plt.imread
+        #sums: npt.NDArray[np.floating] = sums[:3]
     intensity = (sums / (rect.shape[0] * rect.shape[1])) * coefficients
     avg_intensity: np.floating = round(intensity.mean(), 6)
 
