@@ -108,10 +108,10 @@ def get_rectangles_iter(image: MatLike, partition_level: int = 2):
     '''Последовательное всё более дробное разбиение изображения на части и получение этих частей.
     Разбиение идёт от возврата самого изображения до сетки со стороной partition_level частей
     '''
-    for current_partition_level in range(partition_level):
+    for current_partition_level in range(1, partition_level + 1):
         yield from division_on_partitions_iter(
             image,
-            side_partitions_num=current_partition_level + 1
+            side_partitions_num=current_partition_level
         )
 
 def rect_sum(rect: MatLike) -> np.floating:
