@@ -48,6 +48,43 @@ def intensities(image_path: str|Path|BinaryIO, partition_level: int = 2) -> Vect
     # Вектор, характеризующий изображение
     return np.fromiter(intensities_list, dtype=num_dtype)
 
+def generate_grid_coords(
+    x_size: int,
+    y_size: int,
+    side_partitions_num: int = 2,
+    *,
+    x_step: float|None = None,
+    y_step: float|None = None
+):
+    '''
+    Генерирует координаты регионов для разбиения изображения на side_partitions_num^2 частей
+
+    Args:
+        x_size: ширина изображения
+        y_size: высота изображения
+        side_partitions_num: Количество частей по каждой оси
+
+    Yields:
+        Пары ((y0, y1), (x0, x1)) - координаты регионов
+    '''
+    # Чистые размеры части без округлений
+    x_step = x_step or (x_size / side_partitions_num)
+    y_step = y_step or (y_size / side_partitions_num)
+
+    x_starts = np.floor(np.arange(x_step * side_partitions_num)).astype(int)
+    x_ends = np.ceil(np.arange(x_step * (side_partitions_num) + 1)).astype(int)
+    y_starts = np.floor(np.arange(y_step * side_partitions_num)).astype(int)
+    y_ends = np.ceil(np.arange(y_step * (side_partitions_num) + 1)).astype(int)
+
+    # Разбиение слева направо
+    x_parts = zip(x_starts, x_ends)
+    # Разбиение сверху вниз
+    y_parts = zip(y_starts, y_ends)
+
+    for y0, y1 in y_parts:
+        for x0, x1 in x_parts:
+            yield ((y0, y1), (x0, x1))
+
 def division_on_partitions_iter(image: MatLike, side_partitions_num: int = 2):
     '''Разбиение изображения равномерной сеткой на side_partitions_num^2 частей
     '''
@@ -55,16 +92,14 @@ def division_on_partitions_iter(image: MatLike, side_partitions_num: int = 2):
     partition_x_size_raw = image.shape[1] / side_partitions_num
     partition_y_size_raw = image.shape[0] / side_partitions_num
 
-    for partition_y_num in range(side_partitions_num):
-        for partition_x_num in range(side_partitions_num):
-            # Координаты верхнего левого...
-            x_start = round(partition_x_num * partition_x_size_raw)
-            y_start = round(partition_y_num * partition_y_size_raw)
-            # ...и нижнего правого углов
-            x_end = round((partition_x_num + 1) * partition_x_size_raw)
-            y_end = round((partition_y_num + 1) * partition_y_size_raw)
-            # Возврат текущей части
-            yield image[y_start:y_end, x_start:x_end]
+    for y, x in generate_grid_coords(
+        image.shape[1],
+        image.shape[0],
+        side_partitions_num,
+        x_step=partition_x_size_raw,
+        y_step=partition_y_size_raw
+    ):
+        yield image[y[0]:y[1], x[0]:x[1]]
 
 def get_rectangles_iter(image: MatLike, partition_level: int = 2):
     '''Последовательное всё более дробное разбиение изображения на части и получение этих частей.
