@@ -21,6 +21,9 @@ import PIL.Image as pil
 num_dtype = np.float32
 Vector = npt.NDArray[num_dtype]
 
+# Коэффициенты яркости Y преобразования sRGB -> xyY для компонент BGR (ITU-R BT.709)
+BGR_COEFFS = np.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
+
 def intensities(image_path: str|Path|BinaryIO, partition_level: int = 2) -> Vector:
     '''
     https://gist.github.com/liamwhite/b023cdba4738e911293a8c610b98f987
@@ -114,15 +117,12 @@ def get_rectangles_iter(image: MatLike, partition_level: int = 2):
 def rect_sum(rect: MatLike) -> np.floating:
     '''Координата вектора — средняя относительная яркость
     '''
-    # Коэффициенты яркости Y преобразования sRGB -> xyY для компонент RGB
-    coefficients = np.array([0.212656, 0.715158, 0.072186], np.float32)
-
     sums: npt.NDArray[np.generic]|np.generic = np.sum(rect, axis=(0, 1))
     if hasattr(sums, '__len__') and len(sums)>3:
         sums = sums[-3:]
         # При использовании cv2.imread вместо plt.imread
         #sums: npt.NDArray[np.floating] = sums[:3]
-    intensity = (sums / (rect.shape[0] * rect.shape[1])) * coefficients
+    intensity = (sums / (rect.shape[0] * rect.shape[1])) * BGR_COEFFS
     avg_intensity: np.floating = round(intensity.mean(), 6)
 
     return avg_intensity
