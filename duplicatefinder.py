@@ -138,14 +138,22 @@ def similarity(vector1: Vector|tuple|list, vector2: Vector|tuple|list) -> np.flo
     0 - идентичные, 1 - максимально разные
     '''
     # Преобразование необходимо для вычисления разницы векторов
-    vector1 = np.array(vector1) if not isinstance(vector1, np.ndarray) else vector1
-    vector2 = np.array(vector2) if not isinstance(vector2, np.ndarray) else vector2
+    vector1 = np.asarray(vector1, dtype=num_dtype) if not isinstance(vector1, np.ndarray) else vector1
+    vector2 = np.asarray(vector2, dtype=num_dtype) if not isinstance(vector2, np.ndarray) else vector2
 
-    distance = np.linalg.norm(vector1 - vector2)
-    norm1 = np.linalg.norm(vector1)
-    norm2 = np.linalg.norm(vector2)
+    if np.array_equal(vector1, vector2):
+        return np.floating(0)
 
-    return distance/(norm1+norm2)
+    norm_sum = np.sqrt(np.dot(vector1, vector1)) + np.sqrt(np.dot(vector2, vector2))
+
+    if np.isclose(norm_sum, 0):
+        # Неопределённость 0/0, но так как distance=0, то идентичны
+        return np.floating(0)
+
+    diff = vector1 - vector2
+    distance = np.sqrt(np.dot(diff, diff))
+
+    return distance/norm_sum
 
 def is_similar(vector1: Vector, vector2: Vector, threshold: Real=0.1) -> bool:
     '''Похожи ли два вектора
