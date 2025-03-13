@@ -45,23 +45,33 @@ def open_image(image_path: str|Path|BinaryIO) -> MatLike:
 
     return image
 
-def intensities(image_path: str|Path|BinaryIO, partition_level: int = 2) -> Vector:
+def intensities(
+    image_path: str|Path|BinaryIO,
+    partition_level: int = 2,
+    blur_ksize: int|tuple[int, int] = (3, 3)
+) -> Vector:
     '''
     https://gist.github.com/liamwhite/b023cdba4738e911293a8c610b98f987
     Алгоритм основан на анализе средней интенсивности изображения и его четвертей
 
     image_path: путь к изображению
 
-    Возвращается вектор, соответствующий изображению, полученному на входе
-    
     partition_level устанавливает размерность вектора, которая будет равна
     sum{n=1,partition_level}(n^2)
     В принципе, можно получать и одномерные вектора, но меньшая размерность приводит к тому,
     что вектора чаще будут считаться похожими
+
+    blur_ksize: Размер ядра размытия Гаусса, (0,0) для отключения
+
+    Возвращается вектор, соответствующий изображению, полученному на входе
     '''
     image = open_image(image_path)
 
-    image = cv2.GaussianBlur(image, (3,3), 0)
+    # Размытие изображения
+    if isinstance(blur_ksize, int):
+        blur_ksize = (blur_ksize, blur_ksize)
+    if not all(blur_ksize):
+        image = cv2.GaussianBlur(image, blur_ksize, 0)
 
     rectangles = get_rectangles_iter(image, partition_level)
 
@@ -146,11 +156,14 @@ def rect_sum(rect: MatLike) -> np.floating:
 
     return avg_intensity
 
-def intensities_iter(image_list: Iterable[str|Path|BinaryIO]):
+def intensities_iter(
+    image_list: Iterable[str|Path|BinaryIO],
+    **kwargs
+):
     '''Итератор, возвращающий вектора для набора полученных изображений
     '''
     for image in image_list:
-        yield intensities(image)
+        yield intensities(image, **kwargs)
 
 def similarity(vector1: Vector|tuple|list, vector2: Vector|tuple|list) -> np.floating:
     '''Уровень похожести между векторами.
@@ -183,20 +196,22 @@ def is_similar(vector1: Vector, vector2: Vector, threshold: Real=0.1) -> bool:
 
 def similarity_images(
         image1: str|Path|BinaryIO,
-        image2: str|Path|BinaryIO
+        image2: str|Path|BinaryIO,
+        **kwargs
     ) -> np.floating:
     '''Уровень похожести между изображениями.
     0 - идентичные, 1 - максимально разные
     '''
-    return similarity(intensities(image1), intensities(image2))
+    return similarity(intensities(image1, **kwargs), intensities(image2, **kwargs))
 
 def is_similar_images(
         image1: str|Path|BinaryIO,
         image2: str|Path|BinaryIO,
-        threshold: Real = 0.1
+        threshold: Real = 0.1,
+        **kwargs
     ) -> bool:
     '''Похожи ли два изобоажения
     threshold: уровень разницы, больше которого изображения считаются разными
     Возвращается bool
     '''
-    return similarity_images(image1, image2) < threshold
+    return similarity_images(image1, image2, **kwargs) < threshold
