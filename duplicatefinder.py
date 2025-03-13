@@ -18,7 +18,8 @@ import numpy as np
 import numpy.typing as npt
 import PIL.Image as pil
 
-Vector = npt.NDArray[np.float64]
+num_dtype = np.float32
+Vector = npt.NDArray[num_dtype]
 
 def intensities(image_path: str|Path|BinaryIO, partition_level: int = 2) -> Vector:
     '''
@@ -45,7 +46,7 @@ def intensities(image_path: str|Path|BinaryIO, partition_level: int = 2) -> Vect
     intensities_list = map(rect_sum, rectangles)
 
     # Вектор, характеризующий изображение
-    return np.fromiter(intensities_list, dtype=np.float64)
+    return np.fromiter(intensities_list, dtype=num_dtype)
 
 def division_on_partitions_iter(image: MatLike, side_partitions_num: int = 2):
     '''Разбиение изображения равномерной сеткой на side_partitions_num^2 частей
