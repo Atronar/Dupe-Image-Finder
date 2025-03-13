@@ -24,6 +24,27 @@ Vector = npt.NDArray[num_dtype]
 # Коэффициенты яркости Y преобразования sRGB -> xyY для компонент BGR (ITU-R BT.709)
 BGR_COEFFS = np.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
 
+def open_image(image_path: str|Path|BinaryIO) -> MatLike:
+    """Функция, открывающая изображение по его пути, возвращается матрица пикселей в BGR
+    image_path: путь к изображению
+    """
+    # Существует проблема с OpenCV, не позволяющая работать с файлами вне рабочей директории
+    #image = cv2.imread(image_path,cv2.IMREAD_COLOR)
+    with pil.open(image_path) as img:
+        is_grayscale = img.mode == 'L'
+        if is_grayscale:
+            # Прямой доступ к буферу данных, сразу float32
+            img = img.convert('F')
+        elif not is_grayscale and img.mode != 'RGB':
+            img = img.convert('RGB')
+        image = np.array(img, dtype=num_dtype, copy=False)
+
+    if not is_grayscale:
+        # RGB -> BGR
+        image = image[..., ::-1]
+
+    return image
+
 def intensities(image_path: str|Path|BinaryIO, partition_level: int = 2) -> Vector:
     '''
     https://gist.github.com/liamwhite/b023cdba4738e911293a8c610b98f987
@@ -38,10 +59,8 @@ def intensities(image_path: str|Path|BinaryIO, partition_level: int = 2) -> Vect
     В принципе, можно получать и одномерные вектора, но меньшая размерность приводит к тому,
     что вектора чаще будут считаться похожими
     '''
-    # Существует проблема с OpenCV, не позволяющая работать с файлами вне рабочей директории
-    image = np.array(pil.open(image_path))
-    image = image[..., ::-1]
-    #image = cv2.imread(image_path,cv2.IMREAD_COLOR)
+    image = open_image(image_path)
+
     image = cv2.GaussianBlur(image, (3,3), 0)
 
     rectangles = get_rectangles_iter(image, partition_level)
