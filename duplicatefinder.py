@@ -67,18 +67,62 @@ def intensities(
     '''
     image = open_image(image_path)
 
+    # Приведение к значениям яркости (градациям серого)
+    if image.ndim != 2:
+        image = np.dot(image, BGR_COEFFS)
+
     # Размытие изображения
     if isinstance(blur_ksize, int):
         blur_ksize = (blur_ksize, blur_ksize)
     if not all(blur_ksize):
         image = cv2.GaussianBlur(image, blur_ksize, 0)
 
-    rectangles = get_rectangles_iter(image, partition_level)
+    # Предвычисление интегрального изображения для яркости
+    integral = cv2.integral(image)[1:, 1:]
 
-    intensities_list = map(rect_sum, rectangles)
+    # Выделяем память для вектора, характеризующего изображение
+    features = np.empty(sum(level**2 for level in range(1, partition_level+1)), dtype=num_dtype)
+    features_idx = 0
+
+    # Высота и ширина всего изображения
+    y_size, x_size = image.shape[:2]
+
+    for current_partition_level in range(1, partition_level + 1):
+        # Высота и ширина текущего разбиения
+        y_step = y_size / current_partition_level
+        x_step = x_size / current_partition_level
+
+        for (y0, y1), (x0, x1) in generate_grid_coords(
+            x_size,
+            y_size,
+            current_partition_level,
+            x_step=x_step,
+            y_step=y_step
+        ):
+            # Площадь части
+            area = (y1 - y0) * (x1 - x0)
+
+            # Расчёт компоненты итогового вектора
+            if area == 0:
+                features[features_idx] = 0.0
+            else:
+                # Быстрый расчёт суммы через интегральное изображение
+                # и получение средней интенсивности в области
+                features[features_idx] = np.divide(
+                    _get_area_integral_sum(
+                        integral, ((x0, x1), (y0, y1))
+                    ),
+                    area
+                )
+
+            features_idx +=1
 
     # Вектор, характеризующий изображение
-    return np.fromiter(intensities_list, dtype=num_dtype)
+    return features
+
+def _get_area_integral_sum(integral: MatLike, coord: tuple[tuple[int, int], tuple[int, int]]) -> MatLike:
+    (x0, x1), (y0, y1) = coord
+    return integral[y1, x1] - integral[y1, x0] - integral[y0, x1] + integral[y0, x0]
 
 def generate_grid_coords(
     x_size: int,
