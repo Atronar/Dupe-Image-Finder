@@ -81,11 +81,15 @@ def rect_sum(rect: MatLike) -> np.floating:
     # Коэффициенты яркости Y преобразования sRGB -> xyY для компонент RGB
     coefficients = np.array([0.212656, 0.715158, 0.072186], np.float32)
 
-    sums: npt.NDArray[np.generic]|np.generic = np.sum(rect, axis=(0, 1))
-    if hasattr(sums, '__len__') and len(sums)>3:
-        sums = sums[-3:]
+    sums: npt.NDArray[np.generic]|np.generic
+    if rect.ndim > 2 and rect.shape[2]>2:
+        sums = np.sum(rect, axis=(0, 1))
+        if rect.shape[2]>3:
+            sums = sums[-3:] + sums[3]
         # При использовании cv2.imread вместо plt.imread
         #sums: npt.NDArray[np.floating] = sums[:3]
+    else:
+        sums = np.sum(rect)
     intensity = (sums / (rect.shape[0] * rect.shape[1])) * coefficients
     avg_intensity: np.floating = round(intensity.mean(), 6)
 
