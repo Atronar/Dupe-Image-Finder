@@ -78,7 +78,7 @@ def intensities(
         image = np.dot(image, BGR_COEFFS)
 
     # Предвычисление интегрального изображения для яркости
-    integral = cv2.integral(image)[1:, 1:]
+    integral = cv2.integral(image)
 
     # Выделяем память для вектора, характеризующего изображение
     features = np.empty(sum(level**2 for level in range(1, partition_level+1)), dtype=num_dtype)
@@ -147,13 +147,15 @@ def generate_grid_coords(
     x_step = x_step or (x_size / side_partitions_num)
     y_step = y_step or (y_size / side_partitions_num)
 
-    x_starts = np.floor(np.arange(x_step * side_partitions_num)).astype(int)
-    x_ends = np.ceil(np.arange(x_step * (side_partitions_num) + 1)).astype(int)
-    y_starts = np.floor(np.arange(y_step * side_partitions_num)).astype(int)
-    y_ends = np.ceil(np.arange(y_step * (side_partitions_num) + 1)).astype(int)
+    x_points = np.floor(np.arange(0, x_size+1, x_step)).astype(int)
+    x_starts = x_points[:-1]
+    x_ends = x_points[1:]
+    y_points = np.floor(np.arange(0, y_size+1, y_step)).astype(int)
+    y_starts = y_points[:-1]
+    y_ends = y_points[1:]
 
     # Разбиение слева направо
-    x_parts = zip(x_starts, x_ends)
+    x_parts = list(zip(x_starts, x_ends))
     # Разбиение сверху вниз
     y_parts = zip(y_starts, y_ends)
 
