@@ -120,7 +120,7 @@ def intensities(
     # Вектор, характеризующий изображение
     return features
 
-def _get_area_integral_sum(integral: MatLike, coord: tuple[tuple[int, int], tuple[int, int]]) -> MatLike:
+def _get_area_integral_sum(integral: MatLike, coord: tuple[tuple[int, int], tuple[int, int]]) -> MatLike|num_dtype:
     (x0, x1), (y0, y1) = coord
     return integral[y1, x1] - integral[y1, x0] - integral[y0, x1] + integral[y0, x0]
 
