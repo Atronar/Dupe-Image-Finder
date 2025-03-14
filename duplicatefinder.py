@@ -67,15 +67,15 @@ def intensities(
     '''
     image = open_image(image_path)
 
-    # Приведение к значениям яркости (градациям серого)
-    if image.ndim != 2:
-        image = np.dot(image, BGR_COEFFS)
-
     # Размытие изображения
     if isinstance(blur_ksize, int):
         blur_ksize = (blur_ksize, blur_ksize)
     if not all(blur_ksize):
         image = cv2.GaussianBlur(image, blur_ksize, 0)
+
+    # Приведение к значениям яркости (градациям серого)
+    if image.ndim != 2:
+        image = np.dot(image, BGR_COEFFS)
 
     # Предвычисление интегрального изображения для яркости
     integral = cv2.integral(image)[1:, 1:]
