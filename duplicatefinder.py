@@ -12,7 +12,11 @@ is_similar_images() и is_similar()
 from numbers import Real
 from pathlib import Path
 from typing import BinaryIO, Iterable
-import cv2
+try:
+    import cv2
+    cv2_use = True
+except ImportError:
+    cv2_use = False
 from cv2.typing import MatLike
 import numpy as np
 import numpy.typing as npt
@@ -48,6 +52,7 @@ def open_image_vips(image_path: str|Path|BinaryIO, file_format: str|None=None) -
     """
     if not pyvips_use:
         raise ModuleNotFoundError("pyvips не установлен. Необходимо использовать функцию open_image()")
+
     if isinstance(image_path, BinaryIO):
         # Создать источник из буфера
         pos = image_path.tell()
@@ -137,6 +142,115 @@ def open_image_pil(image_path: str|Path|BinaryIO) -> npt.NDArray[num_dtype]:
 
     return image
 
+def gauss_blur(image: MatLike, blur_ksize: int|tuple[int, int] = (3, 3), sigma: float = 0) -> MatLike:
+    """Размытие изображения по Гауссу
+
+    image: массив изображения
+    blur_ksize: размеры гауссова ядра, должно быть нечётным
+    sigma: стандартное отклонение
+
+    Возвращается массив размытого изображения
+    """
+    if pyvips_use:
+        return gauss_blur_vips(image, blur_ksize, sigma)
+    if cv2_use:
+        return gauss_blur_cv(image, blur_ksize, sigma)
+    return gauss_blur_custom(image, blur_ksize, sigma)
+
+def gauss_blur_vips(image: MatLike, blur_ksize: int|tuple[int, int] = (3, 3), sigma: float = 0) -> MatLike:
+    """Размытие изображения по Гауссу с помощью libvips
+
+    image: массив изображения
+    blur_ksize: размеры гауссова ядра, должно быть нечётным
+    sigma: стандартное отклонение
+
+    Возвращается массив размытого изображения
+    """
+    if not pyvips_use:
+        raise ModuleNotFoundError("pyvips не установлен. Необходимо использовать функцию gauss_blur()")
+
+    if isinstance(blur_ksize, tuple):
+        blur_ksize = min(blur_ksize)
+    if not blur_ksize:
+        return image
+
+    if np.isclose(sigma, 0):
+        sigma = 0.15 * blur_ksize + 0.35
+    min_ampl = np.exp(-(blur_ksize//2)**2 / (2 * sigma**2))
+
+    blurred_image = pyvips.Image.new_from_array(image).gaussblur(sigma, min_ampl=min_ampl)
+    return blurred_image.numpy(dtype=num_dtype)
+
+def gauss_blur_cv(image: MatLike, blur_ksize: int|tuple[int, int] = (3, 3), sigma: float = 0) -> MatLike:
+    """Размытие изображения по Гауссу с помощью opencv
+
+    image: массив изображения
+    blur_ksize: размеры гауссова ядра, должно быть нечётным
+    sigma: стандартное отклонение
+
+    Возвращается массив размытого изображения
+    """
+    if not cv2_use:
+        raise ModuleNotFoundError("opencv не установлен. Необходимо использовать функцию gauss_blur()")
+
+    if isinstance(blur_ksize, int):
+        blur_ksize = (blur_ksize, blur_ksize)
+    if not all(blur_ksize):
+        return image
+    return cv2.GaussianBlur(image, blur_ksize, sigma)
+
+def gauss_blur_custom(image: MatLike, blur_ksize: int|tuple[int, int]=(3, 3), sigma: float=0) -> MatLike:
+    """Размытие изображения по Гауссу с помощью чистого numpy
+
+    image: массив изображения
+    blur_ksize: размеры гауссова ядра, должно быть нечётным
+    sigma: стандартное отклонение
+
+    Возвращается массив размытого изображения
+    """
+    if isinstance(blur_ksize, int):
+        blur_ksize = (blur_ksize, blur_ksize)
+
+    if not all(blur_ksize):
+        return image
+
+    kx, ky = blur_ksize
+
+    if np.isclose(sigma, 0):
+        sigma_x = 0.15 * kx + 0.35
+        sigma_y = 0.15 * ky + 0.35
+    else:
+        sigma_x = sigma_y = sigma
+
+    def gaussian_kernel_1d(size: int, sigma: float) -> npt.NDArray:
+        """1D ядро Гаусса."""
+        kernel = np.exp(-(np.arange(size, dtype=num_dtype) - size//2)**2 / (2 * sigma**2))
+        return kernel / kernel.sum(dtype=num_dtype) # Нормализация
+
+    # Генерация разделяемых 1D ядер Гаусса
+    kernel_x = gaussian_kernel_1d(kx, sigma_x)
+    kernel_y = gaussian_kernel_1d(ky, sigma_y)
+
+    pad_x = kx // 2
+    pad_y = ky // 2
+    if image.ndim > 2:
+        padded_image = np.pad(image, ((pad_x, pad_x), (pad_y, pad_y), (0, 0)), mode='reflect')
+    else:
+        padded_image = np.pad(image, ((pad_x, pad_x), (pad_y, pad_y)), mode='reflect')
+
+    # Векторизованная свертка
+    blurred_x = np.apply_along_axis(
+        lambda c: np.convolve(c, kernel_x, mode='valid'),
+        1, padded_image
+    )
+    blurred = np.apply_along_axis(
+        lambda r: np.convolve(r, kernel_y, mode='valid'),
+        0, blurred_x
+    )
+
+    blurred = np.clip(blurred, 0, 255).astype(num_dtype)
+    return blurred
+
 def intensities(
     image_path: str|Path|BinaryIO,
     partition_level: int = 2,
@@ -160,10 +274,7 @@ def intensities(
     image = open_image(image_path)
 
     # Размытие изображения
-    if isinstance(blur_ksize, int):
-        blur_ksize = (blur_ksize, blur_ksize)
-    if not all(blur_ksize):
-        image = cv2.GaussianBlur(image, blur_ksize, 0)
+    image = gauss_blur(image, blur_ksize)
 
     # Приведение к значениям яркости (градациям серого)
     if image.ndim != 2:
