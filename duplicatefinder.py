@@ -17,6 +17,11 @@ from cv2.typing import MatLike
 import numpy as np
 import numpy.typing as npt
 import PIL.Image as pil
+try:
+    import pyvips
+    pyvips_use = True
+except ImportError:
+    pyvips_use = False
 
 num_dtype = np.float32
 Vector = npt.NDArray[num_dtype]
@@ -24,9 +29,76 @@ Vector = npt.NDArray[num_dtype]
 # Коэффициенты яркости Y преобразования sRGB -> xyY для компонент BGR (ITU-R BT.709)
 BGR_COEFFS = np.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
 
-def open_image(image_path: str|Path|BinaryIO) -> MatLike:
+def open_image(image_path: str|Path|BinaryIO) -> npt.NDArray[num_dtype]:
     """Функция, открывающая изображение по его пути, возвращается матрица пикселей в BGR
     image_path: путь к изображению
+    """
+    try:
+        return open_image_vips(image_path)
+    except:
+        return open_image_pil(image_path)
+
+def open_image_vips(image_path: str|Path|BinaryIO, file_format: str|None=None) -> npt.NDArray[num_dtype]:
+    """Открытие изображения в BGR с помощью libvips
+
+    image_path: путь к изображению
+    file_format: (необязательно) формат входного файла
+
+    Возвращается ndarray[float32] — матрица пикселей в BGR
+    """
+    if not pyvips_use:
+        raise ModuleNotFoundError("pyvips не установлен. Необходимо использовать функцию open_image()")
+    if isinstance(image_path, BinaryIO):
+        # Создать источник из буфера
+        pos = image_path.tell()
+        try:
+            image_data = image_path.read()
+        finally:
+            image_path.seek(pos) # возвращаем указатель файла к исходной позиции
+        if file_format:
+            img = pyvips.Image.new_from_buffer(image_data, "", format=file_format)
+        else:
+            source = pyvips.Source.new_from_memory(image_data)
+            img = pyvips.Image.new_from_source(source, "")  # автоопределение формата
+        del image_data
+    else:
+        img = pyvips.Image.new_from_file(image_path, access="sequential")
+
+    if not img:
+        raise FileNotFoundError("Невозможно прочитать файл")
+
+    if isinstance(img, list):
+        if not img:
+            raise FileNotFoundError("Невозможно прочитать файл")
+        image: pyvips.Image = img[0]
+    else:
+        image: pyvips.Image = img
+    del img
+
+    # удаляем альфа-канал, заменяя его фоновым цветом (по умолчанию белый)
+    if image.hasalpha():
+        image = image.flatten()
+
+    # Обработка Grayscale или одноканальных данных
+    if image.bands == 1 or image.interpretation in ["b-w", "greyscale"]:
+        return image.numpy(dtype=num_dtype).squeeze()  # удаление оси каналов (H, W)
+    # Конвертация CMYK → RGB
+    elif image.interpretation == "cmyk":
+        # Используем встроенный профиль sRGB
+        image = image.icc_transform("srgb")
+    # Обработка других не-RGB случаев (например, многоканальные не-RGB)
+    elif "rgb" not in image.interpretation:
+        # Конвертация в RGB через промежуточное пространство
+        image = image.colourspace("srgb")
+    # Конвертация RGB → BGR
+    return image[2::-1].numpy(dtype=num_dtype)
+
+def open_image_pil(image_path: str|Path|BinaryIO) -> npt.NDArray[num_dtype]:
+    """Открытие изображения в BGR с помощью PIL
+
+    image_path: путь к изображению
+
+    Возвращается ndarray[float32] — матрица пикселей в BGR
     """
     # Существует проблема с OpenCV, не позволяющая работать с файлами вне рабочей директории
     #image = cv2.imread(image_path,cv2.IMREAD_COLOR)
