@@ -75,9 +75,9 @@ def open_image_vips(image_path: str|Path|BinaryIO, file_format: str|None=None) -
         image: pyvips.Image = img
     del img
 
-    # удаляем альфа-канал, заменяя его фоновым цветом (по умолчанию белый)
+    # удаляем альфа-канал, заменяя его белым цветом
     if image.hasalpha():
-        image = image.flatten()
+        image = image.flatten(background=255)
 
     # Обработка Grayscale или одноканальных данных
     if image.bands == 1 or image.interpretation in ["b-w", "greyscale"]:
@@ -103,13 +103,33 @@ def open_image_pil(image_path: str|Path|BinaryIO) -> npt.NDArray[num_dtype]:
     # Существует проблема с OpenCV, не позволяющая работать с файлами вне рабочей директории
     #image = cv2.imread(image_path,cv2.IMREAD_COLOR)
     with pil.open(image_path) as img:
-        is_grayscale = img.mode == 'L'
-        if is_grayscale:
-            # Прямой доступ к буферу данных, сразу float32
-            img = img.convert('F')
-        elif not is_grayscale and img.mode != 'RGB':
+        is_grayscale = img.mode in ['L', 'LA']
+        has_alpha = img.mode in ['RGBA', 'LA']
+        # Изображения с палитрой и альфа
+        if img.mode == 'P' and ("transparency" in img.info or img.palette.mode in ['RGBA', 'LA']):
+            if img.palette.mode == 'LA':
+                img = img.convert('LA')
+            else:
+                img = img.convert('RGBA')
+        # Удаление альфа-канала
+        # Простая конвертация заменяет альфу на чёрный вместо белого, что недопустимо
+        if has_alpha:
+            arr = np.asarray(img)
+            h, w = arr.shape[:2]
+            if is_grayscale:
+                alpha = arr[:, :, 1].astype(num_dtype) * (1/255)  # [0, 1]
+                color = arr[:, :, 0].astype(num_dtype)             # [0, 255]
+                white = 255
+            else:
+                alpha = (arr[:, :, 3].astype(num_dtype) * (1/255))[..., None]  # [0, 1]
+                color = arr[:, :, :3].astype(num_dtype)             # [0, 255]
+                white = np.array([255.0, 255.0, 255.0], dtype=num_dtype)
+            image = color * alpha + white * (1 - alpha)
+            return image
+        # Серый и RGB конвертировать не нужно
+        if not is_grayscale and img.mode != 'RGB':
             img = img.convert('RGB')
-        image = np.array(img, dtype=num_dtype, copy=False)
+        image = np.asarray(img, dtype=num_dtype)
 
     if not is_grayscale:
         # RGB -> BGR
