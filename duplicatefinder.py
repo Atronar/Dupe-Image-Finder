@@ -12,6 +12,7 @@ is_similar_images() и is_similar()
 from numbers import Real
 from pathlib import Path
 from typing import BinaryIO, Iterable
+from io import BufferedIOBase
 try:
     import cv2
     cv2_use = True
@@ -20,7 +21,11 @@ except ImportError:
 from cv2.typing import MatLike
 import numpy as np
 import numpy.typing as npt
-import PIL.Image as pil
+try:
+    import PIL.Image as pil
+    pil_use = True
+except ImportError:
+    pil_use = False
 try:
     import pyvips
     pyvips_use = True
@@ -33,14 +38,17 @@ Vector = npt.NDArray[num_dtype]
 # Коэффициенты яркости Y преобразования sRGB -> xyY для компонент BGR (ITU-R BT.709)
 BGR_COEFFS = np.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
 
-def open_image(image_path: str|Path|BinaryIO) -> npt.NDArray[num_dtype]:
+def open_image(image_path: str|Path|BinaryIO) -> MatLike:
     """Функция, открывающая изображение по его пути, возвращается матрица пикселей в BGR
     image_path: путь к изображению
     """
-    try:
+    if pyvips_use:
         return open_image_vips(image_path)
-    except:
+    if pil_use:
         return open_image_pil(image_path)
+    if cv2_use:
+        return open_image_cv(image_path)
+    raise ModuleNotFoundError("Необходимо установить хотя бы одну из этих библиотек: pyvips, pil, opencv")
 
 def open_image_vips(image_path: str|Path|BinaryIO, file_format: str|None=None) -> npt.NDArray[num_dtype]:
     """Открытие изображения в BGR с помощью libvips
@@ -98,6 +106,64 @@ def open_image_vips(image_path: str|Path|BinaryIO, file_format: str|None=None) -
     # Конвертация RGB → BGR
     return image[2::-1].numpy(dtype=num_dtype)
 
+def open_image_cv(image_path: str|Path|BinaryIO) -> MatLike:
+    """Открытие изображения в BGR с помощью opencv
+
+    image_path: путь к изображению
+
+    Возвращается ndarray[float32] — матрица пикселей в BGR
+    """
+    if not cv2_use:
+        raise ModuleNotFoundError("opencv не установлен. Необходимо использовать функцию open_image()")
+
+    def load_image(image_path: str|Path|BinaryIO|BufferedIOBase, flags: int) -> MatLike:
+        if isinstance(image_path, (BinaryIO, BufferedIOBase)):
+            pos = image_path.tell()
+            try:
+                image_data = image_path.read()
+            finally:
+                image_path.seek(pos)
+            np_array = np.frombuffer(image_data, dtype=np.uint8)
+            img = cv2.imdecode(np_array, flags)
+        else:
+            image_path = Path(image_path).absolute()
+            img = cv2.imread(str(image_path), flags)
+            if img is None:
+                with open(image_path, "rb") as image_file:
+                    return load_image(image_file, flags)
+        if img is None:
+            raise FileNotFoundError("Невозможно прочитать файл")
+        return img
+    img = load_image(image_path, cv2.IMREAD_UNCHANGED)
+
+    channels = 1 if img.ndim == 2 else img.shape[2]
+    is_grayscale = channels < 3
+    has_alpha = channels in (2, 4)
+
+    # Изображения без альфа-канала возвращаем как просто BGR/Grayscale
+    if not has_alpha:
+        if not is_grayscale and np.array_equal(img[..., 0], img[..., 1]) and np.array_equal(img[..., 0], img[..., 2]):
+            img = img[..., 0]
+        return img.astype(num_dtype, copy=False)
+
+    # Приведение фактического серого из RGBA в градации серого без потери альфа-канала
+    # Сравнение значений каналов
+    if not is_grayscale and np.array_equal(img[..., 0], img[..., 1]) and np.array_equal(img[..., 0], img[..., 2]):
+        img = img[:, :, [0, 3]].view(np.uint8).reshape(*img.shape[:2], 2)
+        is_grayscale = True
+
+    # Удаление альфа-канала
+    # Простая конвертация заменяет альфу на чёрный вместо белого, что недопустимо
+    # Нормализация альфа-канала в [0, 1]
+    alpha = img[..., -1].astype(num_dtype, copy=False)[..., np.newaxis] / 255.0
+    color = img[..., :-1].astype(num_dtype, copy=False)
+    if is_grayscale:
+        white = 255
+    else:
+        white = np.array([255.0, 255.0, 255.0], dtype=num_dtype)
+    image = color * alpha + white * (1 - alpha)
+    return image.astype(num_dtype)
+
 def open_image_pil(image_path: str|Path|BinaryIO) -> npt.NDArray[num_dtype]:
     """Открытие изображения в BGR с помощью PIL
 
@@ -105,8 +171,9 @@ def open_image_pil(image_path: str|Path|BinaryIO) -> npt.NDArray[num_dtype]:
 
     Возвращается ndarray[float32] — матрица пикселей в BGR
     """
-    # Существует проблема с OpenCV, не позволяющая работать с файлами вне рабочей директории
-    #image = cv2.imread(image_path,cv2.IMREAD_COLOR)
+    if not pil_use:
+        raise ModuleNotFoundError("pillow не установлен. Необходимо использовать функцию open_image()")
+
     with pil.open(image_path) as img:
         is_grayscale = img.mode in ['L', 'LA']
         has_alpha = img.mode in ['RGBA', 'LA']
