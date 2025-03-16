@@ -189,12 +189,12 @@ def open_image_pil(image_path: str|Path|BinaryIO) -> npt.NDArray[num_dtype]:
             arr = np.asarray(img)
             h, w = arr.shape[:2]
             if is_grayscale:
-                alpha = arr[:, :, 1].astype(num_dtype) * (1/255)  # [0, 1]
-                color = arr[:, :, 0].astype(num_dtype)             # [0, 255]
+                alpha = arr[:, :, 1].astype(num_dtype, copy=False) * (1/255)  # [0, 1]
+                color = arr[:, :, 0].astype(num_dtype, copy=False)             # [0, 255]
                 white = 255
             else:
-                alpha = (arr[:, :, 3].astype(num_dtype) * (1/255))[..., None]  # [0, 1]
-                color = arr[:, :, :3].astype(num_dtype)             # [0, 255]
+                alpha = (arr[:, :, 3].astype(num_dtype, copy=False) * (1/255))[..., None]  # [0, 1]
+                color = arr[:, :, :3].astype(num_dtype, copy=False)             # [0, 255]
                 white = np.array([255.0, 255.0, 255.0], dtype=num_dtype)
             image = color * alpha + white * (1 - alpha)
             return image
@@ -315,7 +315,7 @@ def gauss_blur_custom(image: MatLike, blur_ksize: int|tuple[int, int]=(3, 3), si
         0, blurred_x
     )
 
-    blurred = np.clip(blurred, 0, 255).astype(num_dtype)
+    blurred = np.clip(blurred, 0, 255).astype(num_dtype, copy=False)
     return blurred
 
 def intensities(
@@ -417,10 +417,10 @@ def generate_grid_coords(
     x_step = x_step or (x_size / side_partitions_num)
     y_step = y_step or (y_size / side_partitions_num)
 
-    x_points = np.floor(np.arange(0, x_size+1, x_step)).astype(int)
+    x_points = np.floor(np.arange(0, x_size+1, x_step)).astype(int, copy=False)
     x_starts = x_points[:-1]
     x_ends = x_points[1:]
-    y_points = np.floor(np.arange(0, y_size+1, y_step)).astype(int)
+    y_points = np.floor(np.arange(0, y_size+1, y_step)).astype(int, copy=False)
     y_starts = y_points[:-1]
     y_ends = y_points[1:]
 
