@@ -175,31 +175,56 @@ def open_image_pil(image_path: str|Path|BinaryIO) -> npt.NDArray[num_dtype]:
         raise ModuleNotFoundError("pillow не установлен. Необходимо использовать функцию open_image()")
 
     with pil.open(image_path) as img:
-        is_grayscale = img.mode in ['L', 'LA']
-        has_alpha = img.mode in ['RGBA', 'LA']
+        convert_to = None
+        mode = img.mode
+        is_grayscale = mode in ['L', 'LA']
+        has_alpha = mode in ['RGBA', 'LA']
+        is_rgb = 'RGB' in mode
         # Изображения с палитрой и альфа
-        if img.mode == 'P' and ("transparency" in img.info or img.palette.mode in ['RGBA', 'LA']):
-            if img.palette.mode == 'LA':
-                img = img.convert('LA')
-            else:
-                img = img.convert('RGBA')
+        if img.mode == 'P':
+            mode = img.palette.mode
+            if "transparency" in img.info or mode in ['RGBA', 'LA']:
+                has_alpha = True
+                if mode == 'LA':
+                    convert_to = 'LA'
+                    is_grayscale = True
+                else:
+                    convert_to = 'RGBA'
+                    is_rgb = True
+            elif mode == 'L':
+                convert_to = 'L'
+                is_grayscale = True
+            elif mode == 'RGB':
+                convert_to = 'RGB'
+                is_rgb = True
+
+        # Приведение фактического серого из RGB(A) в градации серого без потери альфа-канала
+        # Сравнение значений каналов
+        arr = np.asarray(img, num_dtype)
+        if is_rgb and np.array_equal(arr[..., 0], arr[..., 1]) and np.array_equal(arr[..., 0], arr[..., 2]):
+            convert_to = 'LA' if has_alpha else 'L'
+            is_grayscale = True
+            is_rgb = False
+
+        if convert_to:
+            img = img.convert(convert_to)
+            arr = np.asarray(img, num_dtype)
+
         # Удаление альфа-канала
         # Простая конвертация заменяет альфу на чёрный вместо белого, что недопустимо
         if has_alpha:
-            arr = np.asarray(img)
-            h, w = arr.shape[:2]
+            #arr = np.asarray(img)
+            alpha = (arr[:, :, -1] * (1/255))       # [0, 1]
+            color = arr[:, :, :-1].squeeze()        # [0, 255]
             if is_grayscale:
-                alpha = arr[:, :, 1].astype(num_dtype, copy=False) * (1/255)  # [0, 1]
-                color = arr[:, :, 0].astype(num_dtype, copy=False)             # [0, 255]
                 white = 255
             else:
-                alpha = (arr[:, :, 3].astype(num_dtype, copy=False) * (1/255))[..., None]  # [0, 1]
-                color = arr[:, :, :3].astype(num_dtype, copy=False)             # [0, 255]
+                alpha = alpha[..., np.newaxis]
                 white = np.array([255.0, 255.0, 255.0], dtype=num_dtype)
             image = color * alpha + white * (1 - alpha)
-            return image
+            return image.astype(num_dtype, copy=False)
         # Серый и RGB конвертировать не нужно
-        if not is_grayscale and img.mode != 'RGB':
+        if not (is_grayscale or is_rgb):
             img = img.convert('RGB')
         image = np.asarray(img, dtype=num_dtype)
 
