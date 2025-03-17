@@ -42,13 +42,20 @@ def open_image(image_path: str|Path|BinaryIO) -> MatLike:
     """Функция, открывающая изображение по его пути, возвращается матрица пикселей в BGR
     image_path: путь к изображению
     """
+    try:
+        if cv2_use:
+            return open_image_cv(image_path)
+    except:
+        gif = True
+        pass
     if pyvips_use:
         return open_image_vips(image_path)
     if pil_use:
         return open_image_pil(image_path)
-    if cv2_use:
-        return open_image_cv(image_path)
-    raise ModuleNotFoundError("Необходимо установить хотя бы одну из этих библиотек: pyvips, pil, opencv")
+    if gif:
+        raise ModuleNotFoundError("Для работы с данным типом изображений необходимо установить хотя бы одну из этих библиотек: pyvips, pil")
+    else:
+        raise ModuleNotFoundError("Необходимо установить хотя бы одну из этих библиотек: pyvips, pil, opencv")
 
 def open_image_vips(image_path: str|Path|BinaryIO, file_format: str|None=None) -> npt.NDArray[num_dtype]:
     """Открытие изображения в BGR с помощью libvips
@@ -243,10 +250,10 @@ def gauss_blur(image: MatLike, blur_ksize: int|tuple[int, int] = (3, 3), sigma: 
 
     Возвращается массив размытого изображения
     """
-    if pyvips_use:
-        return gauss_blur_vips(image, blur_ksize, sigma)
     if cv2_use:
         return gauss_blur_cv(image, blur_ksize, sigma)
+    if pyvips_use:
+        return gauss_blur_vips(image, blur_ksize, sigma)
     return gauss_blur_custom(image, blur_ksize, sigma)
 
 def gauss_blur_vips(image: MatLike, blur_ksize: int|tuple[int, int] = (3, 3), sigma: float = 0) -> MatLike:
