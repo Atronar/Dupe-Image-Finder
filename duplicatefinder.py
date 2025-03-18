@@ -350,6 +350,64 @@ def gauss_blur_custom(image: MatLike, blur_ksize: int|tuple[int, int]=(3, 3), si
     blurred = np.clip(blurred, 0, 255).astype(num_dtype, copy=False)
     return blurred
 
+def integral_image(image: MatLike) -> MatLike:
+    """
+    Вычисляет интегральное изображение.
+
+    image: массив изображения
+
+    Возвращается массив интегрального изображения с нулевой рамкой — кумулятивная сумма по каждому измерению
+    """
+    if cv2_use:
+        return integral_image_cv(image)
+    return integral_image_custom(image)
+
+def integral_image_cv(image: MatLike) -> MatLike:
+    """
+    Вычисляет интегральное изображение с помощью opencv.
+
+    image: массив изображения
+
+    Возвращается массив интегрального изображения с нулевой рамкой — кумулятивная сумма по каждому измерению
+    """
+    if not cv2_use:
+        raise ModuleNotFoundError("opencv не установлен. Необходимо использовать функцию integral_image()")
+    return cv2.integral(image)
+
+def integral_image_custom(image: MatLike) -> MatLike:
+    """
+    Вычисляет интегральное изображение с помощью чистого numpy.
+
+    image: массив изображения
+
+    Возвращается массив интегрального изображения с нулевой рамкой — кумулятивная сумма по каждому измерению
+    """
+    # Выбор типа данных
+    kind = image.dtype.kind
+    dtype = (
+        np.float32 if kind == 'f'
+        else np.uint64 if kind == 'u'
+        else np.int64
+    )
+
+    # Создаем нулевую рамку
+    if image.ndim == 3:
+        h, w, c = image.shape
+        integral = np.zeros((h+1, w+1, c), dtype=dtype)
+        integral[1:, 1:, :] = image.astype(dtype, copy=False).cumsum(0).cumsum(1)
+    elif image.ndim == 2:
+        h, w = image.shape
+        integral = np.zeros((h+1, w+1), dtype=dtype)
+        integral[1:, 1:] = image.astype(dtype, copy=False).cumsum(0).cumsum(1)
+    elif image.ndim == 1:
+        h = image.shape[0]
+        integral = np.zeros((h+1,), dtype=dtype)
+        integral[1:] = image.astype(dtype, copy=False).cumsum(0)
+    else:
+        raise ValueError("Поддерживаются только массивы с ndim от 1 до 3")
+
+    return integral
+
 def intensities(
     image_path: str|Path|BinaryIO,
     partition_level: int = 2,
@@ -380,7 +438,7 @@ def intensities(
         image = np.dot(image, BGR_COEFFS)
 
     # Предвычисление интегрального изображения для яркости
-    integral = cv2.integral(image)
+    integral = integral_image(image)
 
     # Выделяем память для вектора, характеризующего изображение
     features = np.empty(sum(level**2 for level in range(1, partition_level+1)), dtype=num_dtype)
