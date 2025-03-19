@@ -9,9 +9,10 @@ similarity_images() указывает уровень близости межд�
 is_similar_images() и is_similar()
 которые вернут булево значение "похоже/не похоже" для двух изображений или векторов соответственно
 '''
+from concurrent.futures import ThreadPoolExecutor
 from numbers import Real
 from pathlib import Path
-from typing import BinaryIO, Iterable
+from typing import BinaryIO, Generator, Iterable
 from io import BufferedIOBase
 try:
     import cv2
@@ -34,6 +35,7 @@ except ImportError:
 
 num_dtype = np.float32
 Vector = npt.NDArray[num_dtype]
+use_threads = True
 
 # Коэффициенты яркости Y преобразования sRGB -> xyY для компонент BGR (ITU-R BT.709)
 BGR_COEFFS = np.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
@@ -440,12 +442,15 @@ def intensities(
     # Предвычисление интегрального изображения для яркости
     integral = integral_image(image)
 
+    # Высота и ширина всего изображения
+    y_size, x_size = image.shape[:2]
+
+    if use_threads:
+        return _calculate_features_parallel(integral, partition_level, (x_size, y_size))
+
     # Выделяем память для вектора, характеризующего изображение
     features = np.empty(sum(level**2 for level in range(1, partition_level+1)), dtype=num_dtype)
     features_idx = 0
-
-    # Высота и ширина всего изображения
-    y_size, x_size = image.shape[:2]
 
     for current_partition_level in range(1, partition_level + 1):
         # Высота и ширина текущего разбиения
@@ -459,26 +464,61 @@ def intensities(
             x_step=x_step,
             y_step=y_step
         ):
-            # Площадь части
-            area = (y1 - y0) * (x1 - x0)
-
-            # Расчёт компоненты итогового вектора
-            if area == 0:
-                features[features_idx] = 0.0
-            else:
-                # Быстрый расчёт суммы через интегральное изображение
-                # и получение средней интенсивности в области
-                features[features_idx] = np.divide(
-                    _get_area_integral_sum(
-                        integral, ((x0, x1), (y0, y1))
-                    ),
-                    area
-                )
-
+            features[features_idx] = _level_part_intensities(integral, ((x0, x1), (y0, y1)))
             features_idx +=1
 
     # Вектор, характеризующий изображение
     return features
+
+def _process_level_part_intensities(args: tuple[MatLike, tuple[tuple[int, int], tuple[int, int]]]):
+    return _level_part_intensities(*args)
+
+def _level_part_intensities(
+    integral: MatLike,
+    coordinates: tuple[tuple[int, int], tuple[int, int]]
+) -> num_dtype:
+    (x0, x1), (y0, y1) = coordinates
+    # Площадь части
+    area = (y1 - y0) * (x1 - x0)
+    if area == 0:
+        return 0.0
+    # Быстрый расчёт суммы через интегральное изображение
+    # и получение средней интенсивности в области
+    return np.divide(
+        _get_area_integral_sum(
+            integral, ((x0, x1), (y0, y1))
+        ),
+        area
+    )
+
+def _calculate_features_parallel(integral: MatLike, partition_level: int, image_size: tuple[int, int]):
+    with ThreadPoolExecutor(max_workers=64) as executor:
+        futures = []
+        x_size, y_size = image_size
+        for current_partition_level in range(1, partition_level + 1):
+            # Высота и ширина текущего разбиения
+            y_step = y_size / current_partition_level
+            x_step = x_size / current_partition_level
+
+            for (y0, y1), (x0, x1) in generate_grid_coords(
+                x_size,
+                y_size,
+                current_partition_level,
+                x_step=x_step,
+                y_step=y_step
+            ):
+                # Подготовка параметров уровня
+                args = (integral, ((x0, x1), (y0, y1)))
+                futures.append(executor.submit(_process_level_part_intensities, args))
+
+        features = np.empty(sum(level**2 for level in range(1, partition_level+1)), dtype=num_dtype)
+        features_idx = 0
+        for future in futures:
+            part_features = future.result()
+            features[features_idx] = part_features
+            features_idx += 1
+
+    return np.asarray(features, dtype=num_dtype)
 
 def _get_area_integral_sum(integral: MatLike, coord: tuple[tuple[int, int], tuple[int, int]]) -> MatLike|num_dtype:
     (x0, x1), (y0, y1) = coord
@@ -491,7 +531,7 @@ def generate_grid_coords(
     *,
     x_step: float|None = None,
     y_step: float|None = None
-):
+) -> Generator[tuple[tuple[int, int], tuple[int, int]], None, None]:
     '''
     Генерирует координаты регионов для разбиения изображения на side_partitions_num^2 частей
 
