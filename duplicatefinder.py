@@ -557,8 +557,6 @@ def rect_sum(rect: MatLike) -> np.floating:
         sums = np.sum(rect, axis=(0, 1))
         if rect.shape[2]>3:
             sums = sums[-3:] + sums[3]
-        # При использовании cv2.imread вместо plt.imread
-        #sums: npt.NDArray[np.floating] = sums[:3]
     else:
         sums = np.sum(rect)
     intensity = (sums / (rect.shape[0] * rect.shape[1])) * BGR_COEFFS
