@@ -54,11 +54,21 @@ def open_image(image_path: str|Path|BinaryIO) -> MatLike:
     if pil_use:
         return open_image_pil(image_path)
     if gif:
-        raise ModuleNotFoundError("Для работы с данным типом изображений необходимо установить хотя бы одну из этих библиотек: pyvips, pil")
+        raise ModuleNotFoundError(
+            "Для работы с данным типом изображений необходимо "
+            "установить хотя бы одну из этих библиотек: "
+            "pyvips, pil"
+        )
     else:
-        raise ModuleNotFoundError("Необходимо установить хотя бы одну из этих библиотек: pyvips, pil, opencv")
+        raise ModuleNotFoundError(
+            "Необходимо установить хотя бы одну из этих библиотек: "
+            "pyvips, pil, opencv"
+        )
 
-def open_image_vips(image_path: str|Path|BinaryIO, file_format: str|None=None) -> npt.NDArray[num_dtype]:
+def open_image_vips(
+    image_path: str|Path|BinaryIO,
+    file_format: str|None=None
+) -> npt.NDArray[num_dtype]:
     """Открытие изображения в BGR с помощью libvips
 
     image_path: путь к изображению
@@ -67,7 +77,10 @@ def open_image_vips(image_path: str|Path|BinaryIO, file_format: str|None=None) -
     Возвращается ndarray[float32] — матрица пикселей в BGR
     """
     if not pyvips_use:
-        raise ModuleNotFoundError("pyvips не установлен. Необходимо использовать функцию open_image()")
+        raise ModuleNotFoundError(
+            "pyvips не установлен. "
+            "Необходимо использовать функцию open_image()"
+        )
 
     if isinstance(image_path, BinaryIO):
         # Создать источник из буфера
@@ -122,7 +135,10 @@ def open_image_cv(image_path: str|Path|BinaryIO) -> MatLike:
     Возвращается ndarray[float32] — матрица пикселей в BGR
     """
     if not cv2_use:
-        raise ModuleNotFoundError("opencv не установлен. Необходимо использовать функцию open_image()")
+        raise ModuleNotFoundError(
+            "opencv не установлен. "
+            "Необходимо использовать функцию open_image()"
+        )
 
     def load_image(image_path: str|Path|BinaryIO|BufferedIOBase, flags: int) -> MatLike:
         if isinstance(image_path, (BinaryIO, BufferedIOBase)):
@@ -150,13 +166,21 @@ def open_image_cv(image_path: str|Path|BinaryIO) -> MatLike:
 
     # Изображения без альфа-канала возвращаем как просто BGR/Grayscale
     if not has_alpha:
-        if not is_grayscale and np.array_equal(img[..., 0], img[..., 1]) and np.array_equal(img[..., 0], img[..., 2]):
+        if (
+            not is_grayscale
+            and np.array_equal(img[..., 0], img[..., 1])
+            and np.array_equal(img[..., 0], img[..., 2])
+        ):
             img = img[..., 0]
         return img.astype(num_dtype, copy=False)
 
     # Приведение фактического серого из RGBA в градации серого без потери альфа-канала
     # Сравнение значений каналов
-    if not is_grayscale and np.array_equal(img[..., 0], img[..., 1]) and np.array_equal(img[..., 0], img[..., 2]):
+    if (
+        not is_grayscale
+        and np.array_equal(img[..., 0], img[..., 1])
+        and np.array_equal(img[..., 0], img[..., 2])
+    ):
         img = img[:, :, [0, 3]].view(np.uint8).reshape(*img.shape[:2], 2)
         is_grayscale = True
 
@@ -180,7 +204,10 @@ def open_image_pil(image_path: str|Path|BinaryIO) -> npt.NDArray[num_dtype]:
     Возвращается ndarray[float32] — матрица пикселей в BGR
     """
     if not pil_use:
-        raise ModuleNotFoundError("pillow не установлен. Необходимо использовать функцию open_image()")
+        raise ModuleNotFoundError(
+            "pillow не установлен. "
+            "Необходимо использовать функцию open_image()"
+        )
 
     with pil.open(image_path) as img:
         convert_to = None
@@ -209,7 +236,11 @@ def open_image_pil(image_path: str|Path|BinaryIO) -> npt.NDArray[num_dtype]:
         # Приведение фактического серого из RGB(A) в градации серого без потери альфа-канала
         # Сравнение значений каналов
         arr = np.asarray(img, num_dtype)
-        if is_rgb and np.array_equal(arr[..., 0], arr[..., 1]) and np.array_equal(arr[..., 0], arr[..., 2]):
+        if (
+            is_rgb
+            and np.array_equal(arr[..., 0], arr[..., 1])
+            and np.array_equal(arr[..., 0], arr[..., 2])
+        ):
             convert_to = 'LA' if has_alpha else 'L'
             is_grayscale = True
             is_rgb = False
@@ -242,7 +273,11 @@ def open_image_pil(image_path: str|Path|BinaryIO) -> npt.NDArray[num_dtype]:
 
     return image
 
-def gauss_blur(image: MatLike, blur_ksize: int|tuple[int, int] = (3, 3), sigma: float = 0) -> MatLike:
+def gauss_blur(
+    image: MatLike,
+    blur_ksize: int|tuple[int, int] = (3, 3),
+    sigma: float = 0
+) -> MatLike:
     """Размытие изображения по Гауссу
 
     image: массив изображения
@@ -257,7 +292,11 @@ def gauss_blur(image: MatLike, blur_ksize: int|tuple[int, int] = (3, 3), sigma: 
         return gauss_blur_vips(image, blur_ksize, sigma)
     return gauss_blur_custom(image, blur_ksize, sigma)
 
-def gauss_blur_vips(image: MatLike, blur_ksize: int|tuple[int, int] = (3, 3), sigma: float = 0) -> MatLike:
+def gauss_blur_vips(
+    image: MatLike,
+    blur_ksize: int|tuple[int, int] = (3, 3),
+    sigma: float = 0
+) -> MatLike:
     """Размытие изображения по Гауссу с помощью libvips
 
     image: массив изображения
@@ -267,7 +306,10 @@ def gauss_blur_vips(image: MatLike, blur_ksize: int|tuple[int, int] = (3, 3), si
     Возвращается массив размытого изображения
     """
     if not pyvips_use:
-        raise ModuleNotFoundError("pyvips не установлен. Необходимо использовать функцию gauss_blur()")
+        raise ModuleNotFoundError(
+            "pyvips не установлен. "
+            "Необходимо использовать функцию gauss_blur()"
+        )
 
     if isinstance(blur_ksize, tuple):
         blur_ksize = min(blur_ksize)
@@ -281,7 +323,11 @@ def gauss_blur_vips(image: MatLike, blur_ksize: int|tuple[int, int] = (3, 3), si
     blurred_image = pyvips.Image.new_from_array(image).gaussblur(sigma, min_ampl=min_ampl)
     return blurred_image.numpy(dtype=num_dtype)
 
-def gauss_blur_cv(image: MatLike, blur_ksize: int|tuple[int, int] = (3, 3), sigma: float = 0) -> MatLike:
+def gauss_blur_cv(
+    image: MatLike,
+    blur_ksize: int|tuple[int, int] = (3, 3),
+    sigma: float = 0
+) -> MatLike:
     """Размытие изображения по Гауссу с помощью opencv
 
     image: массив изображения
@@ -291,7 +337,10 @@ def gauss_blur_cv(image: MatLike, blur_ksize: int|tuple[int, int] = (3, 3), sigm
     Возвращается массив размытого изображения
     """
     if not cv2_use:
-        raise ModuleNotFoundError("opencv не установлен. Необходимо использовать функцию gauss_blur()")
+        raise ModuleNotFoundError(
+            "opencv не установлен. "
+            "Необходимо использовать функцию gauss_blur()"
+        )
 
     if isinstance(blur_ksize, int):
         blur_ksize = (blur_ksize, blur_ksize)
@@ -299,7 +348,11 @@ def gauss_blur_cv(image: MatLike, blur_ksize: int|tuple[int, int] = (3, 3), sigm
         return image
     return cv2.GaussianBlur(image, blur_ksize, sigma)
 
-def gauss_blur_custom(image: MatLike, blur_ksize: int|tuple[int, int]=(3, 3), sigma: float=0) -> MatLike:
+def gauss_blur_custom(
+    image: MatLike,
+    blur_ksize: int|tuple[int, int]=(3, 3),
+    sigma: float=0
+) -> MatLike:
     """Размытие изображения по Гауссу с помощью чистого numpy
 
     image: массив изображения
@@ -357,7 +410,8 @@ def integral_image(image: MatLike) -> MatLike:
 
     image: массив изображения
 
-    Возвращается массив интегрального изображения с нулевой рамкой — кумулятивная сумма по каждому измерению
+    Возвращается массив интегрального изображения с нулевой рамкой —
+    кумулятивная сумма по каждому измерению
     """
     if cv2_use:
         return integral_image_cv(image)
@@ -369,10 +423,14 @@ def integral_image_cv(image: MatLike) -> MatLike:
 
     image: массив изображения
 
-    Возвращается массив интегрального изображения с нулевой рамкой — кумулятивная сумма по каждому измерению
+    Возвращается массив интегрального изображения с нулевой рамкой —
+    кумулятивная сумма по каждому измерению
     """
     if not cv2_use:
-        raise ModuleNotFoundError("opencv не установлен. Необходимо использовать функцию integral_image()")
+        raise ModuleNotFoundError(
+            "opencv не установлен. "
+            "Необходимо использовать функцию integral_image()"
+        )
     return cv2.integral(image)
 
 def integral_image_custom(image: MatLike) -> MatLike:
@@ -381,7 +439,8 @@ def integral_image_custom(image: MatLike) -> MatLike:
 
     image: массив изображения
 
-    Возвращается массив интегрального изображения с нулевой рамкой — кумулятивная сумма по каждому измерению
+    Возвращается массив интегрального изображения с нулевой рамкой —
+    кумулятивная сумма по каждому измерению
     """
     # Выбор типа данных
     kind = image.dtype.kind
@@ -446,7 +505,12 @@ def intensities(
     y_size, x_size = image.shape[:2]
 
     # Расчёт итогового вектора, характеризующего изображение
-    return _calculate_features(integral, partition_level, (x_size, y_size), use_threads=use_threads)
+    return _calculate_features(
+        integral,
+        partition_level,
+        (x_size, y_size),
+        use_threads=use_threads
+    )
 
 def _calculate_features(
     integral: MatLike,
@@ -458,7 +522,13 @@ def _calculate_features(
     '''
     # Не разбиваем на потоки единственную операцию
     if partition_level == 1:
-        features = _level_intensities(integral, partition_level, image_size, image_size, use_threads=False)
+        features = _level_intensities(
+            integral,
+            partition_level,
+            image_size,
+            image_size,
+            use_threads=False
+        )
         return np.asarray(features, dtype=num_dtype)
 
     # Высота и ширина всего изображения
@@ -487,7 +557,13 @@ def _calculate_features(
             part_size = (x_size / current_partition_level, y_size / current_partition_level)
 
             # Расчёт компонент итогового вектора
-            part_features = _level_intensities(integral, current_partition_level, image_size, part_size, use_threads)
+            part_features = _level_intensities(
+                integral,
+                current_partition_level,
+                image_size,
+                part_size,
+                use_threads
+            )
             features[features_idx:features_idx+part_features.size] = part_features
             features_idx += part_features.size
 
@@ -530,7 +606,8 @@ def _level_intensities(
     else:
         x_step, y_step = part_size
 
-    # Выделяем память для компонент вектора, характеризующего изображение на текущем уровне разбиения
+    # Выделяем память для компонент вектора, 
+    # характеризующего изображение на текущем уровне разбиения
     features = np.empty(current_partition_level**2, dtype=num_dtype)
     features_idx = 0
 
@@ -599,7 +676,10 @@ def _level_part_intensities(
         area
     )
 
-def _get_area_integral_sum(integral: MatLike, coord: tuple[tuple[int, int], tuple[int, int]]) -> num_dtype:
+def _get_area_integral_sum(
+    integral: MatLike, 
+    coord: tuple[tuple[int, int], tuple[int, int]]
+) -> num_dtype:
     '''Получение суммы пикселей области изображения через интегральную сумму
     '''
     (x0, x1), (y0, y1) = coord
@@ -713,8 +793,16 @@ def similarity(vector1: Vector|tuple|list, vector2: Vector|tuple|list) -> np.flo
     0 - идентичные, 1 - максимально разные
     '''
     # Преобразование необходимо для вычисления разницы векторов
-    vector1 = np.asarray(vector1, dtype=num_dtype) if not isinstance(vector1, np.ndarray) else vector1
-    vector2 = np.asarray(vector2, dtype=num_dtype) if not isinstance(vector2, np.ndarray) else vector2
+    vector1 = (
+        np.asarray(vector1, dtype=num_dtype)
+        if not isinstance(vector1, np.ndarray) else
+        vector1
+    )
+    vector2 = (
+        np.asarray(vector2, dtype=num_dtype)
+        if not isinstance(vector2, np.ndarray) else
+        vector2
+    )
 
     if np.array_equal(vector1, vector2):
         return np.floating(0)
