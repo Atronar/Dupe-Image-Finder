@@ -20,6 +20,12 @@ try:
 except ImportError:
     cv2_use = False
 from cv2.typing import MatLike
+try:
+    import cupy as cp
+    from cupyx.scipy.ndimage import gaussian_filter as cp_gaussian_filter
+    cp_use = True
+except ImportError:
+    cp_use = False
 import numpy as np
 import numpy.typing as npt
 try:
@@ -37,7 +43,16 @@ num_dtype = np.float32
 Vector = npt.NDArray[num_dtype]
 
 # Коэффициенты яркости Y преобразования sRGB -> xyY для компонент BGR (ITU-R BT.709)
-BGR_COEFFS = np.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
+if cp_use:
+    BGR_COEFFS = cp.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
+else:
+    BGR_COEFFS = np.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
+
+def to_gpu(arr: MatLike):
+    return cp.asarray(arr, dtype=num_dtype) if cp_use else arr
+
+def from_gpu(arr):
+    return cp.asnumpy(arr) if cp_use else arr
 
 def open_image(image_path: str|Path|BinaryIO) -> MatLike:
     """Функция, открывающая изображение по его пути, возвращается матрица пикселей в BGR
@@ -194,7 +209,7 @@ def open_image_cv(image_path: str|Path|BinaryIO) -> MatLike:
     else:
         white = np.array([255.0, 255.0, 255.0], dtype=num_dtype)
     image = color * alpha + white * (1 - alpha)
-    return image.astype(num_dtype)
+    return image.astype(num_dtype).squeeze()
 
 def open_image_pil(image_path: str|Path|BinaryIO) -> npt.NDArray[num_dtype]:
     """Открытие изображения в BGR с помощью PIL
@@ -276,8 +291,9 @@ def open_image_pil(image_path: str|Path|BinaryIO) -> npt.NDArray[num_dtype]:
 def gauss_blur(
     image: MatLike,
     blur_ksize: int|tuple[int, int] = (3, 3),
-    sigma: float = 0
-) -> MatLike:
+    sigma: float = 0,
+    use_gpu: bool = True
+) -> MatLike|cp.ndarray:
     """Размытие изображения по Гауссу
 
     image: массив изображения
@@ -286,6 +302,8 @@ def gauss_blur(
 
     Возвращается массив размытого изображения
     """
+    if cp_use and use_gpu:
+        return gauss_blur_gpu(image, blur_ksize, sigma)
     if cv2_use:
         return gauss_blur_cv(image, blur_ksize, sigma)
     if pyvips_use:
@@ -348,6 +366,27 @@ def gauss_blur_cv(
         return image
     return cv2.GaussianBlur(image, blur_ksize, sigma)
 
+def gauss_blur_gpu(
+    image: cp.ndarray,
+    blur_ksize: int|tuple[int, int]=(3, 3),
+    sigma: float=0
+) -> cp.ndarray:
+    if not cp_use:
+        raise ModuleNotFoundError(
+            "cupy не установлен. "
+            "Необходимо использовать функцию gauss_blur()"
+        )
+
+    if isinstance(blur_ksize, tuple):
+        blur_ksize = min(blur_ksize)
+    if not blur_ksize:
+        return image
+
+    if np.isclose(sigma, 0):
+        sigma = 0.15 * blur_ksize + 0.35
+
+    return cp_gaussian_filter(image, sigma=sigma)
+
 def gauss_blur_custom(
     image: MatLike,
     blur_ksize: int|tuple[int, int]=(3, 3),
@@ -404,7 +443,7 @@ def gauss_blur_custom(
     blurred = np.clip(blurred, 0, 255).astype(num_dtype, copy=False)
     return blurred
 
-def integral_image(image: MatLike) -> MatLike:
+def integral_image(image: MatLike, use_gpu: bool=True) -> MatLike:
     """
     Вычисляет интегральное изображение.
 
@@ -413,6 +452,8 @@ def integral_image(image: MatLike) -> MatLike:
     Возвращается массив интегрального изображения с нулевой рамкой —
     кумулятивная сумма по каждому измерению
     """
+    if cp_use and use_gpu:
+        return integral_image_gpu(image)
     if cv2_use:
         return integral_image_cv(image)
     return integral_image_custom(image)
@@ -432,6 +473,38 @@ def integral_image_cv(image: MatLike) -> MatLike:
             "Необходимо использовать функцию integral_image()"
         )
     return cv2.integral(image)
+
+def integral_image_gpu(image: cp.ndarray):
+    if not cp_use:
+        raise ModuleNotFoundError(
+            "cupy не установлен. "
+            "Необходимо использовать функцию integral_image()"
+        )
+    # Выбор типа данных
+    kind = image.dtype.kind
+    dtype = (
+        cp.float32 if kind == 'f'
+        else cp.uint64 if kind == 'u'
+        else cp.int64
+    )
+
+    # Создаем нулевую рамку
+    if image.ndim == 3:
+        h, w, c = image.shape
+        integral = cp.zeros((h+1, w+1, c), dtype=dtype)
+        integral[1:, 1:, :] = cp.cumsum(cp.cumsum(image, axis=0), axis=1)
+    elif image.ndim == 2:
+        h, w = image.shape
+        integral = cp.zeros((h+1, w+1), dtype=dtype)
+        integral[1:, 1:] = cp.cumsum(cp.cumsum(image, axis=0), axis=1)
+    elif image.ndim == 1:
+        h = image.shape[0]
+        integral = np.zeros((h+1,), dtype=dtype)
+        integral[1:] = cp.cumsum(image, axis=0)
+    else:
+        raise ValueError("Поддерживаются только массивы с ndim от 1 до 3")
+
+    return integral
 
 def integral_image_custom(image: MatLike) -> MatLike:
     """
@@ -472,7 +545,8 @@ def intensities(
     image_path: str|Path|BinaryIO,
     partition_level: int = 2,
     blur_ksize: int|tuple[int, int] = (3, 3),
-    use_threads = True
+    use_threads: bool = True,
+    use_gpu: bool = True
 ) -> Vector:
     '''
     https://gist.github.com/liamwhite/b023cdba4738e911293a8c610b98f987
@@ -491,15 +565,26 @@ def intensities(
     '''
     image = open_image(image_path)
 
+    if (
+        image.ndim < 3 and image.shape[0]*image.shape[1]<2359296
+        or image.shape[0]*image.shape[1]<262144
+    ):
+        use_gpu = False
+
+    image_gpu = to_gpu(image) if use_gpu else image
+
     # Размытие изображения
-    image = gauss_blur(image, blur_ksize)
+    image_gpu = gauss_blur(image_gpu, blur_ksize, use_gpu=use_gpu)
 
     # Приведение к значениям яркости (градациям серого)
     if image.ndim != 2:
-        image = np.dot(image, BGR_COEFFS)
+        if cp_use and use_gpu:
+            image_gpu = cp.dot(image_gpu, BGR_COEFFS)
+        else:
+            image_gpu = np.dot(image_gpu, BGR_COEFFS)
 
     # Предвычисление интегрального изображения для яркости
-    integral = integral_image(image)
+    integral = integral_image(image_gpu, use_gpu=use_gpu)
 
     # Высота и ширина всего изображения
     y_size, x_size = image.shape[:2]
@@ -598,6 +683,7 @@ def _level_intensities(
     # Не разбиваем на потоки единственную операцию
     if current_partition_level == 1:
         feature = np.divide(integral[-1, -1], x_size*y_size)
+        feature = from_gpu(feature)
         return np.array([feature], dtype=num_dtype, copy=False)
 
     # Высота и ширина текущего разбиения
@@ -606,7 +692,7 @@ def _level_intensities(
     else:
         x_step, y_step = part_size
 
-    # Выделяем память для компонент вектора, 
+    # Выделяем память для компонент вектора,
     # характеризующего изображение на текущем уровне разбиения
     features = np.empty(current_partition_level**2, dtype=num_dtype)
     features_idx = 0
@@ -677,7 +763,7 @@ def _level_part_intensities(
     )
 
 def _get_area_integral_sum(
-    integral: MatLike, 
+    integral: MatLike,
     coord: tuple[tuple[int, int], tuple[int, int]]
 ) -> num_dtype:
     '''Получение суммы пикселей области изображения через интегральную сумму
@@ -771,7 +857,7 @@ def intensities_iter(
 ):
     '''Итератор, возвращающий вектора для набора полученных изображений
     '''
-    if use_threads:
+    if kwargs.get("use_threads", True):
         with ThreadPoolExecutor() as executor:
             futures = []
             for image in image_list:
@@ -841,7 +927,7 @@ def is_similar_images(
         threshold: Real = 0.1,
         **kwargs
     ) -> bool:
-    '''Похожи ли два изобоажения
+    '''Похожи ли два изображения
     threshold: уровень разницы, больше которого изображения считаются разными
     Возвращается bool
     '''
