@@ -35,7 +35,6 @@ except ImportError:
 
 num_dtype = np.float32
 Vector = npt.NDArray[num_dtype]
-use_threads = True
 
 # Коэффициенты яркости Y преобразования sRGB -> xyY для компонент BGR (ITU-R BT.709)
 BGR_COEFFS = np.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
@@ -413,7 +412,8 @@ def integral_image_custom(image: MatLike) -> MatLike:
 def intensities(
     image_path: str|Path|BinaryIO,
     partition_level: int = 2,
-    blur_ksize: int|tuple[int, int] = (3, 3)
+    blur_ksize: int|tuple[int, int] = (3, 3),
+    use_threads = True
 ) -> Vector:
     '''
     https://gist.github.com/liamwhite/b023cdba4738e911293a8c610b98f987
@@ -445,18 +445,114 @@ def intensities(
     # Высота и ширина всего изображения
     y_size, x_size = image.shape[:2]
 
-    if use_threads:
-        return _calculate_features_parallel(integral, partition_level, (x_size, y_size))
+    # Расчёт итогового вектора, характеризующего изображение
+    return _calculate_features(integral, partition_level, (x_size, y_size), use_threads=use_threads)
+
+def _calculate_features(
+    integral: MatLike,
+    partition_level: int,
+    image_size: tuple[int, int],
+    use_threads: bool = True
+) -> npt.NDArray[num_dtype]:
+    '''Вычисление вектора, характеризующего изображение
+    '''
+    # Не разбиваем на потоки единственную операцию
+    if partition_level == 1:
+        features = _level_intensities(integral, partition_level, image_size, image_size, use_threads=False)
+        return np.asarray(features, dtype=num_dtype)
+
+    # Высота и ширина всего изображения
+    x_size, y_size = image_size
 
     # Выделяем память для вектора, характеризующего изображение
     features = np.empty(sum(level**2 for level in range(1, partition_level+1)), dtype=num_dtype)
     features_idx = 0
 
-    for current_partition_level in range(1, partition_level + 1):
-        # Высота и ширина текущего разбиения
-        y_step = y_size / current_partition_level
-        x_step = x_size / current_partition_level
+    if use_threads:
+        with ThreadPoolExecutor() as executor:
+            futures = []
+            for current_partition_level in range(1, partition_level + 1):
+                # Высота и ширина текущего разбиения
+                part_size = (x_size / current_partition_level, y_size / current_partition_level)
+                # Подготовка параметров уровня
+                args = (integral, current_partition_level, image_size, part_size, use_threads)
+                futures.append(executor.submit(_process_level_intensities, args))
+            for future in futures:
+                part_features = future.result()
+                features[features_idx:features_idx+part_features.size] = part_features
+                features_idx += part_features.size
+    else:
+        for current_partition_level in range(1, partition_level + 1):
+            # Высота и ширина текущего разбиения
+            part_size = (x_size / current_partition_level, y_size / current_partition_level)
 
+            # Расчёт компонент итогового вектора
+            part_features = _level_intensities(integral, current_partition_level, image_size, part_size, use_threads)
+            features[features_idx:features_idx+part_features.size] = part_features
+            features_idx += part_features.size
+
+    return np.asarray(features, dtype=num_dtype)
+
+def _process_level_intensities(
+    args: tuple[
+        MatLike,
+        int,
+        tuple[int, int],
+        tuple[float, float]|None,
+        bool
+    ]
+) -> npt.NDArray[num_dtype]:
+    '''Получение компонент вектора для текущего уровня разбиения через интегральное изображение
+    Обёртка для _level_intensities()
+    '''
+    return _level_intensities(*args)
+
+def _level_intensities(
+    integral: MatLike,
+    current_partition_level: int,
+    image_size: tuple[int, int],
+    part_size: tuple[float, float]|None = None,
+    use_threads: bool = True
+) -> npt.NDArray[num_dtype]:
+    '''Получение компонент вектора для текущего уровня разбиения через интегральное изображение
+    '''
+    # Высота и ширина всего изображения
+    x_size, y_size = image_size
+
+    # Не разбиваем на потоки единственную операцию
+    if current_partition_level == 1:
+        feature = np.divide(integral[-1, -1], x_size*y_size)
+        return np.array([feature], dtype=num_dtype, copy=False)
+
+    # Высота и ширина текущего разбиения
+    if part_size is None:
+        x_step = y_step = None
+    else:
+        x_step, y_step = part_size
+
+    # Выделяем память для компонент вектора, характеризующего изображение на текущем уровне разбиения
+    features = np.empty(current_partition_level**2, dtype=num_dtype)
+    features_idx = 0
+
+    if use_threads:
+        with ThreadPoolExecutor() as executor:
+            futures = []
+
+            for (y0, y1), (x0, x1) in generate_grid_coords(
+                x_size,
+                y_size,
+                current_partition_level,
+                x_step=x_step,
+                y_step=y_step
+            ):
+                args = (integral, ((x0, x1), (y0, y1)))
+                futures.append(executor.submit(_process_level_part_intensities, args))
+
+            for future in futures:
+                single_feature = future.result()
+                features[features_idx] = single_feature
+                features_idx += 1
+    else:
         for (y0, y1), (x0, x1) in generate_grid_coords(
             x_size,
             y_size,
@@ -464,22 +560,34 @@ def intensities(
             x_step=x_step,
             y_step=y_step
         ):
+            # Расчёт компоненты итогового вектора
             features[features_idx] = _level_part_intensities(integral, ((x0, x1), (y0, y1)))
             features_idx +=1
 
-    # Вектор, характеризующий изображение
     return features
 
-def _process_level_part_intensities(args: tuple[MatLike, tuple[tuple[int, int], tuple[int, int]]]):
+def _process_level_part_intensities(
+    args: tuple[
+        MatLike,
+        tuple[tuple[int, int], tuple[int, int]]
+    ]
+) -> num_dtype|float:
+    '''Получение компоненты вектора для области через интегральное изображение
+    Обёртка для _level_part_intensities()
+    '''
     return _level_part_intensities(*args)
 
 def _level_part_intensities(
     integral: MatLike,
     coordinates: tuple[tuple[int, int], tuple[int, int]]
-) -> num_dtype:
+) -> num_dtype|float:
+    '''Получение компоненты вектора для области через интегральное изображение
+    '''
     (x0, x1), (y0, y1) = coordinates
     # Площадь части
     area = (y1 - y0) * (x1 - x0)
+
+    # Расчёт компоненты итогового вектора
     if area == 0:
         return 0.0
     # Быстрый расчёт суммы через интегральное изображение
@@ -491,36 +599,9 @@ def _level_part_intensities(
         area
     )
 
-def _calculate_features_parallel(integral: MatLike, partition_level: int, image_size: tuple[int, int]):
-    with ThreadPoolExecutor(max_workers=64) as executor:
-        futures = []
-        x_size, y_size = image_size
-        for current_partition_level in range(1, partition_level + 1):
-            # Высота и ширина текущего разбиения
-            y_step = y_size / current_partition_level
-            x_step = x_size / current_partition_level
-
-            for (y0, y1), (x0, x1) in generate_grid_coords(
-                x_size,
-                y_size,
-                current_partition_level,
-                x_step=x_step,
-                y_step=y_step
-            ):
-                # Подготовка параметров уровня
-                args = (integral, ((x0, x1), (y0, y1)))
-                futures.append(executor.submit(_process_level_part_intensities, args))
-
-        features = np.empty(sum(level**2 for level in range(1, partition_level+1)), dtype=num_dtype)
-        features_idx = 0
-        for future in futures:
-            part_features = future.result()
-            features[features_idx] = part_features
-            features_idx += 1
-
-    return np.asarray(features, dtype=num_dtype)
-
-def _get_area_integral_sum(integral: MatLike, coord: tuple[tuple[int, int], tuple[int, int]]) -> MatLike|num_dtype:
+def _get_area_integral_sum(integral: MatLike, coord: tuple[tuple[int, int], tuple[int, int]]) -> num_dtype:
+    '''Получение суммы пикселей области изображения через интегральную сумму
+    '''
     (x0, x1), (y0, y1) = coord
     return integral[y1, x1] - integral[y1, x0] - integral[y0, x1] + integral[y0, x0]
 
@@ -610,8 +691,22 @@ def intensities_iter(
 ):
     '''Итератор, возвращающий вектора для набора полученных изображений
     '''
-    for image in image_list:
-        yield intensities(image, **kwargs)
+    if use_threads:
+        with ThreadPoolExecutor() as executor:
+            futures = []
+            for image in image_list:
+                # Подготовка параметров
+                args = (image, *(kwargs.values()))
+                futures.append(executor.submit(_intensities_process, args))
+
+            for future in futures:
+                yield future.result()
+    else:
+        for image in image_list:
+            yield intensities(image, **kwargs)
+
+def _intensities_process(args):
+    return intensities(*args)
 
 def similarity(vector1: Vector|tuple|list, vector2: Vector|tuple|list) -> np.floating:
     '''Уровень похожести между векторами.
