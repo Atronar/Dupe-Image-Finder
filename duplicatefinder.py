@@ -47,9 +47,8 @@ Vector = npt.NDArray[num_dtype]
 
 # Коэффициенты яркости Y преобразования sRGB -> xyY для компонент BGR (ITU-R BT.709)
 if CUPY_AVAILABLE:
-    BGR_COEFFS = cp.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
-else:
-    BGR_COEFFS = np.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
+    BGR_COEFFS_CUPY = cp.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
+BGR_COEFFS = np.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
 
 def to_gpu(arr: MatLike):
     return cp.asarray(arr, dtype=num_dtype) if CUPY_AVAILABLE else arr
@@ -582,7 +581,7 @@ def intensities(
     # Приведение к значениям яркости (градациям серого)
     if image.ndim != 2:
         if CUPY_AVAILABLE and use_gpu:
-            image_gpu = cp.dot(image_gpu, BGR_COEFFS)
+            image_gpu = cp.dot(image_gpu, BGR_COEFFS_CUPY)
         else:
             image_gpu = np.dot(image_gpu, BGR_COEFFS)
 
