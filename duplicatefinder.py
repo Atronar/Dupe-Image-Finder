@@ -290,7 +290,7 @@ def open_image_pil(image_path: str|Path|BinaryIO) -> npt.NDArray[num_dtype]:
 
     return image
 
-def gauss_blur(
+def _gauss_blur(
     image: MatLike,
     blur_ksize: int|tuple[int, int] = (3, 3),
     sigma: float = 0,
@@ -305,14 +305,14 @@ def gauss_blur(
     Возвращается массив размытого изображения
     """
     if CUPY_AVAILABLE and use_gpu:
-        return gauss_blur_gpu(image, blur_ksize, sigma)
+        return _gauss_blur_gpu(image, blur_ksize, sigma)
     if CV2_AVAILABLE:
-        return gauss_blur_cv(image, blur_ksize, sigma)
+        return _gauss_blur_cv(image, blur_ksize, sigma)
     if VIPS_AVAILABLE:
-        return gauss_blur_vips(image, blur_ksize, sigma)
-    return gauss_blur_custom(image, blur_ksize, sigma)
+        return _gauss_blur_vips(image, blur_ksize, sigma)
+    return _gauss_blur_custom(image, blur_ksize, sigma)
 
-def gauss_blur_vips(
+def _gauss_blur_vips(
     image: MatLike,
     blur_ksize: int|tuple[int, int] = (3, 3),
     sigma: float = 0
@@ -343,7 +343,7 @@ def gauss_blur_vips(
     blurred_image = pyvips.Image.new_from_array(image).gaussblur(sigma, min_ampl=min_ampl)
     return blurred_image.numpy(dtype=num_dtype)
 
-def gauss_blur_cv(
+def _gauss_blur_cv(
     image: MatLike,
     blur_ksize: int|tuple[int, int] = (3, 3),
     sigma: float = 0
@@ -368,7 +368,7 @@ def gauss_blur_cv(
         return image
     return cv2.GaussianBlur(image, blur_ksize, sigma)
 
-def gauss_blur_gpu(
+def _gauss_blur_gpu(
     image: cp.ndarray,
     blur_ksize: int|tuple[int, int]=(3, 3),
     sigma: float=0
@@ -389,7 +389,7 @@ def gauss_blur_gpu(
 
     return cp_gaussian_filter(image, sigma=sigma)
 
-def gauss_blur_custom(
+def _gauss_blur_custom(
     image: MatLike,
     blur_ksize: int|tuple[int, int]=(3, 3),
     sigma: float=0
@@ -445,7 +445,7 @@ def gauss_blur_custom(
     blurred = np.clip(blurred, 0, 255).astype(num_dtype, copy=False)
     return blurred
 
-def integral_image(image: MatLike, use_gpu: bool=True) -> MatLike:
+def _integral_image(image: MatLike, use_gpu: bool=True) -> MatLike:
     """
     Вычисляет интегральное изображение.
 
@@ -455,12 +455,12 @@ def integral_image(image: MatLike, use_gpu: bool=True) -> MatLike:
     кумулятивная сумма по каждому измерению
     """
     if CUPY_AVAILABLE and use_gpu:
-        return integral_image_gpu(image)
+        return _integral_image_gpu(image)
     if CV2_AVAILABLE:
-        return integral_image_cv(image)
-    return integral_image_custom(image)
+        return _integral_image_cv(image)
+    return _integral_image_custom(image)
 
-def integral_image_cv(image: MatLike) -> MatLike:
+def _integral_image_cv(image: MatLike) -> MatLike:
     """
     Вычисляет интегральное изображение с помощью opencv.
 
@@ -476,7 +476,7 @@ def integral_image_cv(image: MatLike) -> MatLike:
         )
     return cv2.integral(image)
 
-def integral_image_gpu(image: cp.ndarray):
+def _integral_image_gpu(image: cp.ndarray):
     if not CUPY_AVAILABLE:
         raise ModuleNotFoundError(
             "cupy не установлен. "
@@ -508,7 +508,7 @@ def integral_image_gpu(image: cp.ndarray):
 
     return integral
 
-def integral_image_custom(image: MatLike) -> MatLike:
+def _integral_image_custom(image: MatLike) -> MatLike:
     """
     Вычисляет интегральное изображение с помощью чистого numpy.
 
@@ -576,7 +576,7 @@ def intensities(
     image_gpu = to_gpu(image) if use_gpu else image
 
     # Размытие изображения
-    image_gpu = gauss_blur(image_gpu, blur_ksize, use_gpu=use_gpu)
+    image_gpu = _gauss_blur(image_gpu, blur_ksize, use_gpu=use_gpu)
 
     # Приведение к значениям яркости (градациям серого)
     if image.ndim != 2:
@@ -586,7 +586,7 @@ def intensities(
             image_gpu = np.dot(image_gpu, BGR_COEFFS)
 
     # Предвычисление интегрального изображения для яркости
-    integral = integral_image(image_gpu, use_gpu=use_gpu)
+    integral = _integral_image(image_gpu, use_gpu=use_gpu)
 
     # Высота и ширина всего изображения
     y_size, x_size = image.shape[:2]
