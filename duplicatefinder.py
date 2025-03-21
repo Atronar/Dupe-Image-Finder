@@ -14,59 +14,62 @@ from numbers import Real
 from pathlib import Path
 from typing import BinaryIO, Generator, Iterable
 from io import BufferedIOBase
-try:
-    import cv2
-    cv2_use = True
-except ImportError:
-    cv2_use = False
-from cv2.typing import MatLike
+import numpy as np
+import numpy.typing as npt
+
+
+# Инициализация библиотек обработки изображений
 try:
     import cupy as cp
     from cupyx.scipy.ndimage import gaussian_filter as cp_gaussian_filter
-    cp_use = True
+    CUPY_AVAILABLE = True
 except ImportError:
-    cp_use = False
-import numpy as np
-import numpy.typing as npt
+    CUPY_AVAILABLE = False
 try:
-    import PIL.Image as pil
-    pil_use = True
+    import cv2
+    CV2_AVAILABLE = True
 except ImportError:
-    pil_use = False
+    CV2_AVAILABLE = False
+from cv2.typing import MatLike
 try:
     import pyvips
-    pyvips_use = True
+    VIPS_AVAILABLE = True
 except ImportError:
-    pyvips_use = False
+    VIPS_AVAILABLE = False
+try:
+    import PIL.Image as pil
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
 
 num_dtype = np.float32
 Vector = npt.NDArray[num_dtype]
 
 # Коэффициенты яркости Y преобразования sRGB -> xyY для компонент BGR (ITU-R BT.709)
-if cp_use:
+if CUPY_AVAILABLE:
     BGR_COEFFS = cp.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
 else:
     BGR_COEFFS = np.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
 
 def to_gpu(arr: MatLike):
-    return cp.asarray(arr, dtype=num_dtype) if cp_use else arr
+    return cp.asarray(arr, dtype=num_dtype) if CUPY_AVAILABLE else arr
 
 def from_gpu(arr):
-    return cp.asnumpy(arr) if cp_use else arr
+    return cp.asnumpy(arr) if CUPY_AVAILABLE else arr
 
 def open_image(image_path: str|Path|BinaryIO) -> MatLike:
     """Функция, открывающая изображение по его пути, возвращается матрица пикселей в BGR
     image_path: путь к изображению
     """
     try:
-        if cv2_use:
+        if CV2_AVAILABLE:
             return open_image_cv(image_path)
     except:
         gif = True
         pass
-    if pyvips_use:
+    if VIPS_AVAILABLE:
         return open_image_vips(image_path)
-    if pil_use:
+    if PIL_AVAILABLE:
         return open_image_pil(image_path)
     if gif:
         raise ModuleNotFoundError(
@@ -91,7 +94,7 @@ def open_image_vips(
 
     Возвращается ndarray[float32] — матрица пикселей в BGR
     """
-    if not pyvips_use:
+    if not VIPS_AVAILABLE:
         raise ModuleNotFoundError(
             "pyvips не установлен. "
             "Необходимо использовать функцию open_image()"
@@ -149,7 +152,7 @@ def open_image_cv(image_path: str|Path|BinaryIO) -> MatLike:
 
     Возвращается ndarray[float32] — матрица пикселей в BGR
     """
-    if not cv2_use:
+    if not CV2_AVAILABLE:
         raise ModuleNotFoundError(
             "opencv не установлен. "
             "Необходимо использовать функцию open_image()"
@@ -218,7 +221,7 @@ def open_image_pil(image_path: str|Path|BinaryIO) -> npt.NDArray[num_dtype]:
 
     Возвращается ndarray[float32] — матрица пикселей в BGR
     """
-    if not pil_use:
+    if not PIL_AVAILABLE:
         raise ModuleNotFoundError(
             "pillow не установлен. "
             "Необходимо использовать функцию open_image()"
@@ -302,11 +305,11 @@ def gauss_blur(
 
     Возвращается массив размытого изображения
     """
-    if cp_use and use_gpu:
+    if CUPY_AVAILABLE and use_gpu:
         return gauss_blur_gpu(image, blur_ksize, sigma)
-    if cv2_use:
+    if CV2_AVAILABLE:
         return gauss_blur_cv(image, blur_ksize, sigma)
-    if pyvips_use:
+    if VIPS_AVAILABLE:
         return gauss_blur_vips(image, blur_ksize, sigma)
     return gauss_blur_custom(image, blur_ksize, sigma)
 
@@ -323,7 +326,7 @@ def gauss_blur_vips(
 
     Возвращается массив размытого изображения
     """
-    if not pyvips_use:
+    if not VIPS_AVAILABLE:
         raise ModuleNotFoundError(
             "pyvips не установлен. "
             "Необходимо использовать функцию gauss_blur()"
@@ -354,7 +357,7 @@ def gauss_blur_cv(
 
     Возвращается массив размытого изображения
     """
-    if not cv2_use:
+    if not CV2_AVAILABLE:
         raise ModuleNotFoundError(
             "opencv не установлен. "
             "Необходимо использовать функцию gauss_blur()"
@@ -371,7 +374,7 @@ def gauss_blur_gpu(
     blur_ksize: int|tuple[int, int]=(3, 3),
     sigma: float=0
 ) -> cp.ndarray:
-    if not cp_use:
+    if not CUPY_AVAILABLE:
         raise ModuleNotFoundError(
             "cupy не установлен. "
             "Необходимо использовать функцию gauss_blur()"
@@ -452,9 +455,9 @@ def integral_image(image: MatLike, use_gpu: bool=True) -> MatLike:
     Возвращается массив интегрального изображения с нулевой рамкой —
     кумулятивная сумма по каждому измерению
     """
-    if cp_use and use_gpu:
+    if CUPY_AVAILABLE and use_gpu:
         return integral_image_gpu(image)
-    if cv2_use:
+    if CV2_AVAILABLE:
         return integral_image_cv(image)
     return integral_image_custom(image)
 
@@ -467,7 +470,7 @@ def integral_image_cv(image: MatLike) -> MatLike:
     Возвращается массив интегрального изображения с нулевой рамкой —
     кумулятивная сумма по каждому измерению
     """
-    if not cv2_use:
+    if not CV2_AVAILABLE:
         raise ModuleNotFoundError(
             "opencv не установлен. "
             "Необходимо использовать функцию integral_image()"
@@ -475,7 +478,7 @@ def integral_image_cv(image: MatLike) -> MatLike:
     return cv2.integral(image)
 
 def integral_image_gpu(image: cp.ndarray):
-    if not cp_use:
+    if not CUPY_AVAILABLE:
         raise ModuleNotFoundError(
             "cupy не установлен. "
             "Необходимо использовать функцию integral_image()"
@@ -578,7 +581,7 @@ def intensities(
 
     # Приведение к значениям яркости (градациям серого)
     if image.ndim != 2:
-        if cp_use and use_gpu:
+        if CUPY_AVAILABLE and use_gpu:
             image_gpu = cp.dot(image_gpu, BGR_COEFFS)
         else:
             image_gpu = np.dot(image_gpu, BGR_COEFFS)
