@@ -4,7 +4,12 @@ Dupe Image Finder
 
 Для работы необходимо:
 * [python 3.6](https://www.python.org/downloads/)
-* [opencv](https://github.com/skvark/opencv-python/)
+* [numpy](https://numpy.org/)
+* Одна из следующих библиотек:
+	* [opencv](https://github.com/skvark/opencv-python/)
+	* [pyvips](https://github.com/libvips/pyvips) (Например, в сброке [pyvips-binary](https://github.com/kleisauke/pyvips-binary))
+	* [pillow](https://github.com/python-pillow/Pillow)
+* (Опционально) [cupy](https://github.com/cupy/cupy) для вычислений на видеокарте
 
 Методы:
 ------
@@ -19,7 +24,7 @@ Dupe Image Finder
 -----
 **intensities(image_path: str|Path|BinaryIO) -> array**<br>
 Главная функция всего модуля.<br>
-Алгоритм основан на анализе средней интенсивности изображения и его четвертей ([алгоритм соответствует этому коду на Ruby](https://gist.github.com/liamwhite/b023cdba4738e911293a8c610b98f987))<br>
+Алгоритм основан на анализе средней интенсивности изображения и его четвертей (алгоритм в целом следует логике [этого кода на Ruby](https://gist.github.com/liamwhite/b023cdba4738e911293a8c610b98f987))<br>
 Данная функция возвращает пятимерный вектор, соответствующий изображению, полученному на входе
 
 #### intensities_iter
