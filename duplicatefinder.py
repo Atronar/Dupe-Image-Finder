@@ -61,9 +61,10 @@ def open_image(image_path: str|Path|BinaryIO) -> MatLike:
     image_path: путь к изображению
     """
     try:
+        gif = False
         if CV2_AVAILABLE:
             return open_image_cv(image_path)
-    except:
+    except FileNotFoundError:
         gif = True
         pass
     if VIPS_AVAILABLE:
@@ -269,7 +270,6 @@ def open_image_pil(image_path: str|Path|BinaryIO) -> npt.NDArray[num_dtype]:
         # Удаление альфа-канала
         # Простая конвертация заменяет альфу на чёрный вместо белого, что недопустимо
         if has_alpha:
-            #arr = np.asarray(img)
             alpha = (arr[:, :, -1] * (1/255))       # [0, 1]
             color = arr[:, :, :-1].squeeze()        # [0, 255]
             if is_grayscale:
@@ -568,6 +568,8 @@ def intensities(
     image = open_image(image_path)
 
     if (
+        # Для цветных менее (условно) 512x512 и серых менее (условно) 1536x1536
+        # использование GPU может быть медленнее, чем CPU
         image.ndim < 3 and image.shape[0]*image.shape[1]<2359296
         or image.shape[0]*image.shape[1]<262144
     ):
