@@ -914,21 +914,27 @@ def is_similar(vector1: Vector, vector2: Vector, threshold: Real=0.1) -> bool:
     return similarity(vector1,vector2) < threshold
 
 def similarity_images(
-        image1: str|Path|BinaryIO,
-        image2: str|Path|BinaryIO,
-        **kwargs
-    ) -> np.floating:
+    image1: str|Path|BinaryIO,
+    image2: str|Path|BinaryIO,
+    **kwargs
+) -> np.floating:
     '''Уровень похожести между изображениями.
     0 - идентичные, 1 - максимально разные
     '''
-    return similarity(intensities(image1, **kwargs), intensities(image2, **kwargs))
+    if kwargs.get("use_threads", True):
+        with ThreadPoolExecutor(2) as executor:
+            future1 = executor.submit(intensities, image1, **kwargs)
+            future2 = executor.submit(intensities, image2, **kwargs)
+        return similarity(future1.result(), future2.result())
+    else:
+        return similarity(intensities(image1, **kwargs), intensities(image2, **kwargs))
 
 def is_similar_images(
-        image1: str|Path|BinaryIO,
-        image2: str|Path|BinaryIO,
-        threshold: Real = 0.1,
-        **kwargs
-    ) -> bool:
+    image1: str|Path|BinaryIO,
+    image2: str|Path|BinaryIO,
+    threshold: Real = 0.1,
+    **kwargs
+) -> bool:
     '''Похожи ли два изображения
     threshold: уровень разницы, больше которого изображения считаются разными
     Возвращается bool
