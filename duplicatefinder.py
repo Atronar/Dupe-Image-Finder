@@ -53,7 +53,7 @@ BGR_COEFFS = np.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
 def to_gpu(arr: MatLike):
     return cp.asarray(arr, dtype=num_dtype) if CUPY_AVAILABLE else arr
 
-def from_gpu(arr):
+def from_gpu(arr) -> npt.NDArray:
     return cp.asnumpy(arr) if CUPY_AVAILABLE else arr
 
 def open_image(image_path: str|Path|BinaryIO) -> MatLike:
