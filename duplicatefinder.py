@@ -51,7 +51,12 @@ if CUPY_AVAILABLE:
 BGR_COEFFS = np.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
 
 def to_gpu(arr: MatLike):
-    return cp.asarray(arr, dtype=num_dtype) if CUPY_AVAILABLE else arr
+    if CUPY_AVAILABLE:
+        mem = cp.cuda.Device().mem_info
+        if arr.nbytes > mem[0] * 0.9:  # Не использовать более 90% свободной памяти
+            return arr
+        return cp.asarray(arr, dtype=num_dtype)
+    return arr
 
 def from_gpu(arr) -> npt.NDArray:
     return cp.asnumpy(arr) if CUPY_AVAILABLE else arr
