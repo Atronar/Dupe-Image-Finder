@@ -299,7 +299,6 @@ def _gauss_blur(
     image: MatLike,
     blur_ksize: int|tuple[int, int] = (3, 3),
     sigma: float = 0,
-    use_gpu: bool = True
 ) -> MatLike|cp.ndarray:
     """Размытие изображения по Гауссу
 
@@ -309,7 +308,7 @@ def _gauss_blur(
 
     Возвращается массив размытого изображения
     """
-    if CUPY_AVAILABLE and use_gpu:
+    if CUPY_AVAILABLE and isinstance(image, cp.ndarray):
         return _gauss_blur_gpu(image, blur_ksize, sigma)
     if CV2_AVAILABLE:
         return _gauss_blur_cv(image, blur_ksize, sigma)
@@ -450,7 +449,7 @@ def _gauss_blur_custom(
     blurred = np.clip(blurred, 0, 255).astype(num_dtype, copy=False)
     return blurred
 
-def _integral_image(image: MatLike, use_gpu: bool=True) -> MatLike:
+def _integral_image(image: MatLike) -> MatLike:
     """
     Вычисляет интегральное изображение.
 
@@ -459,7 +458,7 @@ def _integral_image(image: MatLike, use_gpu: bool=True) -> MatLike:
     Возвращается массив интегрального изображения с нулевой рамкой —
     кумулятивная сумма по каждому измерению
     """
-    if CUPY_AVAILABLE and use_gpu:
+    if CUPY_AVAILABLE and isinstance(image, cp.ndarray):
         return _integral_image_gpu(image)
     if CV2_AVAILABLE:
         return _integral_image_cv(image)
@@ -580,10 +579,15 @@ def intensities(
     ):
         use_gpu = False
 
-    image_gpu = to_gpu(image) if use_gpu else image
+    if use_gpu:
+        image_gpu = to_gpu(image)
+        if not isinstance(image_gpu, cp.ndarray):
+            use_gpu = False
+    else:
+        image_gpu = image
 
     # Размытие изображения
-    image_gpu = _gauss_blur(image_gpu, blur_ksize, use_gpu=use_gpu)
+    image_gpu = _gauss_blur(image_gpu, blur_ksize)
 
     # Приведение к значениям яркости (градациям серого)
     if image.ndim != 2:
@@ -593,7 +597,7 @@ def intensities(
             image_gpu = np.dot(image_gpu, BGR_COEFFS)
 
     # Предвычисление интегрального изображения для яркости
-    integral = _integral_image(image_gpu, use_gpu=use_gpu)
+    integral = _integral_image(image_gpu)
 
     # Высота и ширина всего изображения
     y_size, x_size = image.shape[:2]
