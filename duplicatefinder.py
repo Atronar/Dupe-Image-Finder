@@ -20,7 +20,7 @@ import numpy.typing as npt
 # Инициализация библиотек обработки изображений
 try:
     import cupy as cp
-    from cupyx.scipy.ndimage import gaussian_filter as cp_gaussian_filter
+    from cupyx.scipy.ndimage import gaussian_filter as cp_gaussian_filter, convolve as cp_convolve
     CUPY_AVAILABLE = True
 except ImportError:
     CUPY_AVAILABLE = False
@@ -649,6 +649,157 @@ def _integral_image_custom(
         return get_integral(image), get_integral(image_sq)
     return get_integral(image)
 
+@overload
+def _sobel(image: npImageArray, dy: bool=False) -> npImageArray: ...
+@overload
+def _sobel(image: cpImageArray, dy: bool=False) -> cpImageArray: ...
+def _sobel(image: npImageArray|cpImageArray, dy: bool=False) -> npImageArray|cpImageArray:
+    """
+    Вычисляет градиент Собеля для изображения.
+
+    image: массив изображения
+    dy: сменить направление градиента на вертикальное (по умолчанию — горизонтальное),
+        считается только первая производная
+
+    Возвращается массив градиента изображения
+    """
+    if dy:
+        _dx, _dy = 0, 1
+    else:
+        _dx, _dy = 1, 0
+    if CUPY_AVAILABLE and isinstance(image, cp.ndarray):
+        return _sobel_gpu(image, _dx, _dy)
+    if CV2_AVAILABLE:
+        return _sobel_cv(image, _dx, _dy)
+    return _sobel_custom(image, _dx, _dy)
+
+def _sobel_cv(image: npImageArray, dx: int, dy: int) -> npImageArray:
+    """
+    Вычисляет градиент Собеля для изображения с помощью opencv.
+
+    image: массив изображения
+    dx, dy: производная по направлению градиента
+
+    Возвращается массив градиента изображения
+    """
+    if not CV2_AVAILABLE:
+        raise ModuleNotFoundError(
+            "opencv не установлен. "
+            "Необходимо использовать функцию _sobel()"
+        )
+    return cv2.Sobel(image, cv2.CV_32F, dx, dy, ksize=3).astype(num_dtype, copy=False)
+
+def _sobel_gpu(image: cpImageArray, dx: int, dy: int) -> cpImageArray:
+    """
+    Вычисляет градиент Собеля для изображения с помощью cupy.
+
+    image: массив изображения
+    dx, dy: направление градиента, считается только первая производная
+
+    Возвращается массив градиента изображения
+    """
+    if not CUPY_AVAILABLE:
+        raise ModuleNotFoundError(
+            "cupy не установлен. "
+            "Необходимо использовать функцию _sobel()"
+        )
+    # Ядра Собеля
+    sobel_x_kernel = cp.array([
+        [-1, 0, 1],
+        [-2, 0, 2],
+        [-1, 0, 1]
+    ], dtype=cp.float32)
+    sobel_y_kernel = cp.array([
+        [-1, -2, -1],
+        [0,  0,  0],
+        [1,  2,  1]
+    ], dtype=cp.float32)
+
+    # Применение свертки
+    result = cp.zeros_like(image)
+    if dx > 0:
+        result += cp_convolve(image, sobel_x_kernel, mode='reflect')
+    elif dy > 0:
+        result += cp_convolve(image, sobel_y_kernel, mode='reflect')
+    return result
+
+def _sobel_custom(image: npImageArray, dx: int, dy: int) -> npImageArray:
+    """
+    Вычисляет градиент Собеля для изображения с помощью чистого numpy.
+
+    image: массив изображения
+    dx, dy: направление градиента, считается только первая производная
+
+    Возвращается массив градиента изображения
+    """
+    def _conv_1d_strided(
+        image: npImageArray,
+        kernel: npImageArray,
+        axis: Literal[0, 1]
+    ) -> npImageArray:
+        shape = list(image.shape) + [3,]
+        shape[axis] -= 2
+        shape = tuple(shape)
+
+        # Вычисление strides вручную
+        strides = (image.strides[0], image.strides[1], image.strides[axis])
+
+        # Создание "окон" через as_strided
+        windows = np.lib.stride_tricks.as_strided(
+            image,
+            shape = shape,
+            strides = strides
+        )
+
+        # Свертка и суммирование
+        return np.sum(windows * kernel, axis=-1).astype(np.float32)
+
+    pad_image = np.pad(image, pad_width=1, mode='reflect')
+
+    # Ядра Собеля (разделенные)
+    kernel_vert = np.array([1, 2, 1], dtype=np.float32)
+    kernel_horiz = np.array([-1, 0, 1], dtype=np.float32)
+
+    result = np.zeros_like(image, dtype=num_dtype)
+    # Вертикальная свертка (ось Y)
+    if dx > 0:
+        temp = _conv_1d_strided(pad_image, kernel_vert, axis=0)
+        result = _conv_1d_strided(temp, kernel_horiz, axis=1)
+
+    # Горизонтальная свертка (ось X)
+    elif dy > 0:
+        temp = _conv_1d_strided(pad_image, kernel_horiz, axis=0)
+        result = _conv_1d_strided(temp, kernel_vert, axis=1)
+
+    return result
+
+@overload
+def _grad_integral_image(
+    image: npImageArray
+) -> npIntegralImageArray: ...
+@overload
+def _grad_integral_image(
+    image: cpImageArray
+) -> cpIntegralImageArray: ...
+def _grad_integral_image(
+    image: npImageArray | cpImageArray
+) -> npIntegralImageArray | cpIntegralImageArray:
+    """
+    Вычисляет интегральное изображение градиента изображения.
+
+    image: массив изображения
+
+    Возвращается массив интегрального градиента изображения с нулевой рамкой —
+    кумулятивная сумма по каждому измерению
+    """
+    grad_x = _sobel(image, dy=False)
+    grad_y = _sobel(image, dy=True)
+    if CUPY_AVAILABLE and isinstance(image, cp.ndarray):
+        grad_mag = cp.sqrt(grad_x**2 + grad_y**2)
+    else:
+        grad_mag = np.sqrt(grad_x**2 + grad_y**2)
+    return _integral_image(grad_mag, sq=False)
+
 def intensities(
     image_path: str | Path | BinaryIO,
     partition_level: int = 2,
@@ -672,6 +823,7 @@ def intensities(
     Возвращается список векторов, соответствующих изображению, полученному на входе
     Первый вектор основан на средней интенсивности
     Второй - на контрасте
+    Третий - на текстуре
     '''
     image = open_image(image_path)
 
@@ -703,6 +855,9 @@ def intensities(
     # Предвычисление интегрального изображения для яркости и контраста
     integral, integral_sq = _integral_image(image_gpu, sq=True)
 
+    # Вычисление интегрального градиента
+    grad_integral = _grad_integral_image(image_gpu)
+
     # Высота и ширина всего изображения
     y_size, x_size = image.shape[:2]
 
@@ -711,6 +866,7 @@ def intensities(
     features_integrals_list: list[tuple[npIntegralImageArray|cpIntegralImageArray, ...]] = [
         (integral,),
         (integral, integral_sq),
+        (grad_integral,),
     ]
     if use_threads:
         with ThreadPoolExecutor() as executor:
