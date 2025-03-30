@@ -577,7 +577,7 @@ def intensities(
     blur_ksize: int | tuple[int, int] = (3, 3),
     use_threads: bool = True,
     use_gpu: bool = True
-) -> Vector:
+) -> list[Vector]:
     '''
     https://gist.github.com/liamwhite/b023cdba4738e911293a8c610b98f987
     Алгоритм основан на анализе средней интенсивности изображения и его четвертей
@@ -591,7 +591,7 @@ def intensities(
 
     blur_ksize: Размер ядра размытия Гаусса, (0,0) для отключения
 
-    Возвращается вектор, соответствующий изображению, полученному на входе
+    Возвращается список векторов, соответствующих изображению, полученному на входе
     '''
     image = open_image(image_path)
 
@@ -627,12 +627,14 @@ def intensities(
     y_size, x_size = image.shape[:2]
 
     # Расчёт итогового вектора, характеризующего изображение
-    return _calculate_features(
+    features_list = []
+    features_list.append(_calculate_features(
         integral,
         partition_level,
         (x_size, y_size),
-        use_threads=use_threads
-    )
+        use_threads = use_threads
+    ))
+    return features_list
 
 @overload
 def _calculate_features(
@@ -948,7 +950,7 @@ def rect_sum(rect: npImageArray) -> float:
 def intensities_iter(
     image_list: Iterable[str | Path | BinaryIO],
     **kwargs
-) -> Generator[Vector, None, None]:
+) -> Generator[list[Vector], None, None]:
     '''Итератор, возвращающий вектора для набора полученных изображений
     '''
     if kwargs.get("use_threads", True):
@@ -1009,7 +1011,7 @@ def similarity_images(
     image1: str | Path | BinaryIO,
     image2: str | Path | BinaryIO,
     **kwargs
-) -> float:
+) -> list[float]:
     '''Уровень похожести между изображениями.
     0 - идентичные, 1 - максимально разные
     '''
@@ -1017,9 +1019,12 @@ def similarity_images(
         with ThreadPoolExecutor(2) as executor:
             future1 = executor.submit(intensities, image1, **kwargs)
             future2 = executor.submit(intensities, image2, **kwargs)
-        return similarity(future1.result(), future2.result())
+            vectors1 = future1.result()
+            vectors2 = future2.result()
     else:
-        return similarity(intensities(image1, **kwargs), intensities(image2, **kwargs))
+        vectors1 = intensities(image1, **kwargs)
+        vectors2 = intensities(image2, **kwargs)
+    return [similarity(vectors1[vector_num], vectors2[vector_num]) for vector_num in range(len(vectors1))]
 
 def is_similar_images(
     image1: str | Path | BinaryIO,
@@ -1031,4 +1036,4 @@ def is_similar_images(
     threshold: уровень разницы, больше которого изображения считаются разными
     Возвращается bool
     '''
-    return similarity_images(image1, image2, **kwargs) < threshold
+    return all(similarity_level < threshold for similarity_level in similarity_images(image1, image2, **kwargs))
