@@ -10,9 +10,8 @@ is_similar_images() и is_similar()
 которые вернут булево значение "похоже/не похоже" для двух изображений или векторов соответственно
 '''
 from concurrent.futures import ThreadPoolExecutor
-from numbers import Real
 from pathlib import Path
-from typing import BinaryIO, Generator, Iterable
+from typing import BinaryIO, Generator, Iterable, TYPE_CHECKING, overload
 from io import BufferedIOBase
 import numpy as np
 import numpy.typing as npt
@@ -43,14 +42,23 @@ except ImportError:
     PIL_AVAILABLE = False
 
 num_dtype = np.float32
+num_integral_dtype = np.float32 | np.uint64 | np.int64
 Vector = npt.NDArray[num_dtype]
+npImageArray = npt.NDArray[num_dtype]
+npIntegralImageArray = npt.NDArray[num_integral_dtype]
+if TYPE_CHECKING:
+    class cpImageArray(cp.ndarray): ...
+    class cpIntegralImageArray(cp.ndarray): ...
+else:
+    cpImageArray = cp.ndarray
+    cpIntegralImageArray = cp.ndarray
 
 # Коэффициенты яркости Y преобразования sRGB -> xyY для компонент BGR (ITU-R BT.709)
 if CUPY_AVAILABLE:
     BGR_COEFFS_CUPY = cp.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
 BGR_COEFFS = np.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
 
-def to_gpu(arr: MatLike):
+def to_gpu(arr: npImageArray) -> npImageArray | cpImageArray:
     if CUPY_AVAILABLE:
         mem = cp.cuda.Device().mem_info
         if arr.nbytes > mem[0] * 0.9:  # Не использовать более 90% свободной памяти
@@ -58,10 +66,10 @@ def to_gpu(arr: MatLike):
         return cp.asarray(arr, dtype=num_dtype)
     return arr
 
-def from_gpu(arr) -> npt.NDArray:
+def from_gpu(arr) -> npImageArray:
     return cp.asnumpy(arr) if CUPY_AVAILABLE else arr
 
-def open_image(image_path: str|Path|BinaryIO) -> MatLike:
+def open_image(image_path: str|Path|BinaryIO) -> npImageArray:
     """Функция, открывающая изображение по его пути, возвращается матрица пикселей в BGR
     image_path: путь к изображению
     """
@@ -89,9 +97,9 @@ def open_image(image_path: str|Path|BinaryIO) -> MatLike:
         )
 
 def open_image_vips(
-    image_path: str|Path|BinaryIO,
-    file_format: str|None=None
-) -> npt.NDArray[num_dtype]:
+    image_path: str | Path | BinaryIO,
+    file_format: str | None = None
+) -> npImageArray:
     """Открытие изображения в BGR с помощью libvips
 
     image_path: путь к изображению
@@ -150,7 +158,7 @@ def open_image_vips(
     # Конвертация RGB → BGR
     return image[2::-1].numpy(dtype=num_dtype)
 
-def open_image_cv(image_path: str|Path|BinaryIO) -> MatLike:
+def open_image_cv(image_path: str|Path|BinaryIO) -> npImageArray:
     """Открытие изображения в BGR с помощью opencv
 
     image_path: путь к изображению
@@ -219,7 +227,7 @@ def open_image_cv(image_path: str|Path|BinaryIO) -> MatLike:
     image = color * alpha + white * (1 - alpha)
     return image.astype(num_dtype).squeeze()
 
-def open_image_pil(image_path: str|Path|BinaryIO) -> npt.NDArray[num_dtype]:
+def open_image_pil(image_path: str|Path|BinaryIO) -> npImageArray:
     """Открытие изображения в BGR с помощью PIL
 
     image_path: путь к изображению
@@ -295,11 +303,23 @@ def open_image_pil(image_path: str|Path|BinaryIO) -> npt.NDArray[num_dtype]:
 
     return image
 
+@overload
 def _gauss_blur(
-    image: MatLike,
-    blur_ksize: int|tuple[int, int] = (3, 3),
+    image: npImageArray,
+    blur_ksize: int | tuple[int, int] = (3, 3),
+    sigma: float = 0
+) -> npImageArray: ...
+@overload
+def _gauss_blur(
+    image: cpImageArray,
+    blur_ksize: int | tuple[int, int] = (3, 3),
+    sigma: float = 0
+) -> cpImageArray: ...
+def _gauss_blur(
+    image: npImageArray | cpImageArray,
+    blur_ksize: int | tuple[int, int] = (3, 3),
     sigma: float = 0,
-) -> MatLike|cp.ndarray:
+) -> npImageArray | cpImageArray:
     """Размытие изображения по Гауссу
 
     image: массив изображения
@@ -317,10 +337,10 @@ def _gauss_blur(
     return _gauss_blur_custom(image, blur_ksize, sigma)
 
 def _gauss_blur_vips(
-    image: MatLike,
-    blur_ksize: int|tuple[int, int] = (3, 3),
+    image: npImageArray,
+    blur_ksize: int | tuple[int, int] = (3, 3),
     sigma: float = 0
-) -> MatLike:
+) -> npImageArray:
     """Размытие изображения по Гауссу с помощью libvips
 
     image: массив изображения
@@ -348,10 +368,10 @@ def _gauss_blur_vips(
     return blurred_image.numpy(dtype=num_dtype)
 
 def _gauss_blur_cv(
-    image: MatLike,
-    blur_ksize: int|tuple[int, int] = (3, 3),
+    image: npImageArray,
+    blur_ksize: int | tuple[int, int] = (3, 3),
     sigma: float = 0
-) -> MatLike:
+) -> npImageArray:
     """Размытие изображения по Гауссу с помощью opencv
 
     image: массив изображения
@@ -370,13 +390,13 @@ def _gauss_blur_cv(
         blur_ksize = (blur_ksize, blur_ksize)
     if not all(blur_ksize):
         return image
-    return cv2.GaussianBlur(image, blur_ksize, sigma)
+    return cv2.GaussianBlur(image, blur_ksize, sigma).astype(num_dtype, copy=False)
 
 def _gauss_blur_gpu(
-    image: cp.ndarray,
-    blur_ksize: int|tuple[int, int]=(3, 3),
-    sigma: float=0
-) -> cp.ndarray:
+    image: cpImageArray,
+    blur_ksize: int | tuple[int, int] = (3, 3),
+    sigma: float = 0
+) -> cpImageArray:
     if not CUPY_AVAILABLE:
         raise ModuleNotFoundError(
             "cupy не установлен. "
@@ -394,10 +414,10 @@ def _gauss_blur_gpu(
     return cp_gaussian_filter(image, sigma=sigma)
 
 def _gauss_blur_custom(
-    image: MatLike,
-    blur_ksize: int|tuple[int, int]=(3, 3),
-    sigma: float=0
-) -> MatLike:
+    image: npImageArray,
+    blur_ksize: int | tuple[int, int] = (3, 3),
+    sigma: float = 0
+) -> npImageArray:
     """Размытие изображения по Гауссу с помощью чистого numpy
 
     image: массив изображения
@@ -449,7 +469,11 @@ def _gauss_blur_custom(
     blurred = np.clip(blurred, 0, 255).astype(num_dtype, copy=False)
     return blurred
 
-def _integral_image(image: MatLike) -> MatLike:
+@overload
+def _integral_image(image: npImageArray) -> npIntegralImageArray: ...
+@overload
+def _integral_image(image: cpImageArray) -> cpIntegralImageArray: ...
+def _integral_image(image: npImageArray|cpImageArray) -> npIntegralImageArray|cpIntegralImageArray:
     """
     Вычисляет интегральное изображение.
 
@@ -464,7 +488,7 @@ def _integral_image(image: MatLike) -> MatLike:
         return _integral_image_cv(image)
     return _integral_image_custom(image)
 
-def _integral_image_cv(image: MatLike) -> MatLike:
+def _integral_image_cv(image: npImageArray) -> npt.NDArray:
     """
     Вычисляет интегральное изображение с помощью opencv.
 
@@ -480,7 +504,7 @@ def _integral_image_cv(image: MatLike) -> MatLike:
         )
     return cv2.integral(image)
 
-def _integral_image_gpu(image: cp.ndarray):
+def _integral_image_gpu(image: cpImageArray) -> cpIntegralImageArray:
     if not CUPY_AVAILABLE:
         raise ModuleNotFoundError(
             "cupy не установлен. "
@@ -512,7 +536,7 @@ def _integral_image_gpu(image: cp.ndarray):
 
     return integral
 
-def _integral_image_custom(image: MatLike) -> MatLike:
+def _integral_image_custom(image: npImageArray) -> npIntegralImageArray:
     """
     Вычисляет интегральное изображение с помощью чистого numpy.
 
@@ -548,9 +572,9 @@ def _integral_image_custom(image: MatLike) -> MatLike:
     return integral
 
 def intensities(
-    image_path: str|Path|BinaryIO,
+    image_path: str | Path | BinaryIO,
     partition_level: int = 2,
-    blur_ksize: int|tuple[int, int] = (3, 3),
+    blur_ksize: int | tuple[int, int] = (3, 3),
     use_threads: bool = True,
     use_gpu: bool = True
 ) -> Vector:
@@ -610,14 +634,32 @@ def intensities(
         use_threads=use_threads
     )
 
+@overload
 def _calculate_features(
-    integral: MatLike,
+    integral: npIntegralImageArray,
     partition_level: int,
     image_size: tuple[int, int],
     use_threads: bool = True
-) -> npt.NDArray[num_dtype]:
+) -> npImageArray: ...
+@overload
+def _calculate_features(
+    integral: cpIntegralImageArray,
+    partition_level: int,
+    image_size: tuple[int, int],
+    use_threads: bool = True
+) -> cpImageArray: ...
+def _calculate_features(
+    integral: npIntegralImageArray | cpIntegralImageArray,
+    partition_level: int,
+    image_size: tuple[int, int],
+    use_threads: bool = True
+) -> npImageArray | cpImageArray:
     '''Вычисление вектора, характеризующего изображение
     '''
+    if CUPY_AVAILABLE and isinstance(integral, cp.ndarray):
+        p = cp
+    else:
+        p = np
     # Не разбиваем на потоки единственную операцию
     if partition_level == 1:
         features = _level_intensities(
@@ -625,15 +667,15 @@ def _calculate_features(
             partition_level,
             image_size,
             image_size,
-            use_threads=False
+            use_threads = False
         )
-        return np.asarray(features, dtype=num_dtype)
+        return features
 
     # Высота и ширина всего изображения
     x_size, y_size = image_size
 
     # Выделяем память для вектора, характеризующего изображение
-    features = np.empty(sum(level**2 for level in range(1, partition_level+1)), dtype=num_dtype)
+    features = p.empty(sum(level**2 for level in range(1, partition_level+1)), dtype=num_dtype)
     features_idx = 0
 
     if use_threads:
@@ -665,39 +707,78 @@ def _calculate_features(
             features[features_idx:features_idx+part_features.size] = part_features
             features_idx += part_features.size
 
-    return np.asarray(features, dtype=num_dtype)
+    return features
 
+@overload
 def _process_level_intensities(
     args: tuple[
-        MatLike,
+        npIntegralImageArray,
         int,
         tuple[int, int],
-        tuple[float, float]|None,
+        tuple[float, float] | None,
         bool
     ]
-) -> npt.NDArray[num_dtype]:
+) -> npImageArray: ...
+@overload
+def _process_level_intensities(
+    args: tuple[
+        cpIntegralImageArray,
+        int,
+        tuple[int, int],
+        tuple[float, float] | None,
+        bool
+    ]
+) -> cpImageArray: ...
+def _process_level_intensities(
+    args: tuple[
+        npIntegralImageArray | cpIntegralImageArray,
+        int,
+        tuple[int, int],
+        tuple[float, float] | None,
+        bool
+    ]
+) -> npImageArray | cpImageArray:
     '''Получение компонент вектора для текущего уровня разбиения через интегральное изображение
     Обёртка для _level_intensities()
     '''
     return _level_intensities(*args)
 
+@overload
 def _level_intensities(
-    integral: MatLike,
+    integral: npIntegralImageArray,
     current_partition_level: int,
     image_size: tuple[int, int],
-    part_size: tuple[float, float]|None = None,
+    part_size: tuple[float, float] | None = None,
     use_threads: bool = True
-) -> npt.NDArray[num_dtype]:
+) -> npImageArray: ...
+@overload
+def _level_intensities(
+    integral: cpIntegralImageArray,
+    current_partition_level: int,
+    image_size: tuple[int, int],
+    part_size: tuple[float, float] | None = None,
+    use_threads: bool = True
+) -> cpImageArray: ...
+def _level_intensities(
+    integral: npIntegralImageArray | cpIntegralImageArray,
+    current_partition_level: int,
+    image_size: tuple[int, int],
+    part_size: tuple[float, float] | None = None,
+    use_threads: bool = True
+) -> npImageArray | cpImageArray:
     '''Получение компонент вектора для текущего уровня разбиения через интегральное изображение
     '''
+    if CUPY_AVAILABLE and isinstance(integral, cp.ndarray):
+        p = cp
+    else:
+        p = np
     # Высота и ширина всего изображения
     x_size, y_size = image_size
 
     # Не разбиваем на потоки единственную операцию
     if current_partition_level == 1:
-        feature = np.divide(integral[-1, -1], x_size*y_size)
-        feature = from_gpu(feature)
-        return np.array([feature], dtype=num_dtype, copy=False)
+        feature = p.divide(integral[-1, -1], x_size*y_size)
+        return p.array([feature], dtype=num_dtype, copy=False)
 
     # Высота и ширина текущего разбиения
     if part_size is None:
@@ -707,7 +788,7 @@ def _level_intensities(
 
     # Выделяем память для компонент вектора,
     # характеризующего изображение на текущем уровне разбиения
-    features = np.empty(current_partition_level**2, dtype=num_dtype)
+    features = p.empty(current_partition_level**2, dtype=num_dtype)
     features_idx = 0
 
     if use_threads:
@@ -718,8 +799,8 @@ def _level_intensities(
                 x_size,
                 y_size,
                 current_partition_level,
-                x_step=x_step,
-                y_step=y_step
+                x_step = x_step,
+                y_step = y_step
             ):
                 args = (integral, ((x0, x1), (y0, y1)))
                 futures.append(executor.submit(_process_level_part_intensities, args))
@@ -733,30 +814,30 @@ def _level_intensities(
             x_size,
             y_size,
             current_partition_level,
-            x_step=x_step,
-            y_step=y_step
+            x_step = x_step,
+            y_step = y_step
         ):
             # Расчёт компоненты итогового вектора
             features[features_idx] = _level_part_intensities(integral, ((x0, x1), (y0, y1)))
-            features_idx +=1
+            features_idx += 1
 
     return features
 
 def _process_level_part_intensities(
     args: tuple[
-        MatLike,
+        npIntegralImageArray | cpIntegralImageArray,
         tuple[tuple[int, int], tuple[int, int]]
     ]
-) -> num_dtype|float:
+) -> float:
     '''Получение компоненты вектора для области через интегральное изображение
     Обёртка для _level_part_intensities()
     '''
     return _level_part_intensities(*args)
 
 def _level_part_intensities(
-    integral: MatLike,
+    integral: npIntegralImageArray | cpIntegralImageArray,
     coordinates: tuple[tuple[int, int], tuple[int, int]]
-) -> num_dtype|float:
+) -> float:
     '''Получение компоненты вектора для области через интегральное изображение
     '''
     (x0, x1), (y0, y1) = coordinates
@@ -768,17 +849,17 @@ def _level_part_intensities(
         return 0.0
     # Быстрый расчёт суммы через интегральное изображение
     # и получение средней интенсивности в области
-    return np.divide(
+    return float(np.divide(
         _get_area_integral_sum(
             integral, ((x0, x1), (y0, y1))
         ),
         area
-    )
+    ))
 
 def _get_area_integral_sum(
-    integral: MatLike,
+    integral: npIntegralImageArray | cpIntegralImageArray,
     coord: tuple[tuple[int, int], tuple[int, int]]
-) -> num_dtype:
+) -> num_integral_dtype:
     '''Получение суммы пикселей области изображения через интегральную сумму
     '''
     (x0, x1), (y0, y1) = coord
@@ -789,8 +870,8 @@ def generate_grid_coords(
     y_size: int,
     side_partitions_num: int = 2,
     *,
-    x_step: float|None = None,
-    y_step: float|None = None
+    x_step: float | None = None,
+    y_step: float | None = None
 ) -> Generator[tuple[tuple[int, int], tuple[int, int]], None, None]:
     '''
     Генерирует координаты регионов для разбиения изображения на side_partitions_num^2 частей
@@ -823,7 +904,7 @@ def generate_grid_coords(
         for x0, x1 in x_parts:
             yield ((y0, y1), (x0, x1))
 
-def division_on_partitions_iter(image: MatLike, side_partitions_num: int = 2):
+def division_on_partitions_iter(image: npImageArray, side_partitions_num: int = 2):
     '''Разбиение изображения равномерной сеткой на side_partitions_num^2 частей
     '''
     # Чистые размеры части без округлений
@@ -834,40 +915,40 @@ def division_on_partitions_iter(image: MatLike, side_partitions_num: int = 2):
         image.shape[1],
         image.shape[0],
         side_partitions_num,
-        x_step=partition_x_size_raw,
-        y_step=partition_y_size_raw
+        x_step = partition_x_size_raw,
+        y_step = partition_y_size_raw
     ):
         yield image[y[0]:y[1], x[0]:x[1]]
 
-def get_rectangles_iter(image: MatLike, partition_level: int = 2):
+def get_rectangles_iter(image: npImageArray, partition_level: int = 2):
     '''Последовательное всё более дробное разбиение изображения на части и получение этих частей.
     Разбиение идёт от возврата самого изображения до сетки со стороной partition_level частей
     '''
     for current_partition_level in range(1, partition_level + 1):
         yield from division_on_partitions_iter(
             image,
-            side_partitions_num=current_partition_level
+            side_partitions_num = current_partition_level
         )
 
-def rect_sum(rect: MatLike) -> np.floating:
+def rect_sum(rect: npImageArray) -> float:
     '''Координата вектора — средняя относительная яркость
     '''
-    sums: npt.NDArray[np.generic]|np.generic
+    sums: npt.NDArray[np.number] | np.number
     if rect.ndim > 2 and rect.shape[2]>2:
         sums = np.sum(rect, axis=(0, 1))
-        if rect.shape[2]>3:
+        if rect.shape[2]>3 and isinstance(sums, np.ndarray):
             sums = sums[-3:] + sums[3]
     else:
         sums = np.sum(rect)
     intensity = (sums / (rect.shape[0] * rect.shape[1])) * BGR_COEFFS
     avg_intensity: np.floating = round(intensity.mean(), 6)
 
-    return avg_intensity
+    return float(avg_intensity)
 
 def intensities_iter(
-    image_list: Iterable[str|Path|BinaryIO],
+    image_list: Iterable[str | Path | BinaryIO],
     **kwargs
-):
+) -> Generator[Vector, None, None]:
     '''Итератор, возвращающий вектора для набора полученных изображений
     '''
     if kwargs.get("use_threads", True):
@@ -887,7 +968,7 @@ def intensities_iter(
 def _intensities_process(args):
     return intensities(*args)
 
-def similarity(vector1: Vector|tuple|list, vector2: Vector|tuple|list) -> np.floating:
+def similarity(vector1: Vector|tuple|list, vector2: Vector|tuple|list) -> float:
     '''Уровень похожести между векторами.
     0 - идентичные, 1 - максимально разные
     '''
@@ -904,20 +985,20 @@ def similarity(vector1: Vector|tuple|list, vector2: Vector|tuple|list) -> np.flo
     )
 
     if np.array_equal(vector1, vector2):
-        return np.floating(0)
+        return 0.0
 
     norm_sum = np.sqrt(np.dot(vector1, vector1)) + np.sqrt(np.dot(vector2, vector2))
 
     if np.isclose(norm_sum, 0):
         # Неопределённость 0/0, но так как distance=0, то идентичны
-        return np.floating(0)
+        return 0.0
 
     diff = vector1 - vector2
     distance = np.sqrt(np.dot(diff, diff))
 
-    return distance/norm_sum
+    return float(distance/norm_sum)
 
-def is_similar(vector1: Vector, vector2: Vector, threshold: Real=0.1) -> bool:
+def is_similar(vector1: Vector, vector2: Vector, threshold: float=0.1) -> bool:
     '''Похожи ли два вектора
     threshold: уровень разницы, больше которого вектора считаются разными
     Возвращается bool
@@ -925,10 +1006,10 @@ def is_similar(vector1: Vector, vector2: Vector, threshold: Real=0.1) -> bool:
     return similarity(vector1,vector2) < threshold
 
 def similarity_images(
-    image1: str|Path|BinaryIO,
-    image2: str|Path|BinaryIO,
+    image1: str | Path | BinaryIO,
+    image2: str | Path | BinaryIO,
     **kwargs
-) -> np.floating:
+) -> float:
     '''Уровень похожести между изображениями.
     0 - идентичные, 1 - максимально разные
     '''
@@ -941,9 +1022,9 @@ def similarity_images(
         return similarity(intensities(image1, **kwargs), intensities(image2, **kwargs))
 
 def is_similar_images(
-    image1: str|Path|BinaryIO,
-    image2: str|Path|BinaryIO,
-    threshold: Real = 0.1,
+    image1: str | Path | BinaryIO,
+    image2: str | Path | BinaryIO,
+    threshold: float = 0.1,
     **kwargs
 ) -> bool:
     '''Похожи ли два изображения
