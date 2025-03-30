@@ -11,7 +11,7 @@ is_similar_images() и is_similar()
 '''
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import BinaryIO, Generator, Iterable, TYPE_CHECKING, overload
+from typing import BinaryIO, Generator, Iterable, Literal, TYPE_CHECKING, overload
 from io import BufferedIOBase
 import numpy as np
 import numpy.typing as npt
@@ -66,8 +66,8 @@ def to_gpu(arr: npImageArray) -> npImageArray | cpImageArray:
         return cp.asarray(arr, dtype=num_dtype)
     return arr
 
-def from_gpu(arr) -> npImageArray:
-    return cp.asnumpy(arr) if CUPY_AVAILABLE else arr
+def from_gpu(arr: npImageArray | cpImageArray) -> npImageArray:
+    return cp.asnumpy(arr) if CUPY_AVAILABLE and isinstance(arr, cp.ndarray) else arr
 
 def open_image(image_path: str|Path|BinaryIO) -> npImageArray:
     """Функция, открывающая изображение по его пути, возвращается матрица пикселей в BGR
@@ -470,29 +470,58 @@ def _gauss_blur_custom(
     return blurred
 
 @overload
-def _integral_image(image: npImageArray) -> npIntegralImageArray: ...
+def _integral_image(image: npImageArray, sq: Literal[False]) -> npIntegralImageArray: ...
 @overload
-def _integral_image(image: cpImageArray) -> cpIntegralImageArray: ...
-def _integral_image(image: npImageArray|cpImageArray) -> npIntegralImageArray|cpIntegralImageArray:
+def _integral_image(image: npImageArray, sq: Literal[True]) -> tuple[npIntegralImageArray, npIntegralImageArray]: ...
+@overload
+def _integral_image(image: cpImageArray, sq: Literal[False]) -> cpIntegralImageArray: ...
+@overload
+def _integral_image(image: cpImageArray, sq: Literal[True]) -> tuple[cpIntegralImageArray, cpIntegralImageArray]: ...
+def _integral_image(
+    image: npImageArray | cpImageArray,
+    sq: bool = False
+) -> (
+    npIntegralImageArray
+    | cpIntegralImageArray
+    | tuple[npIntegralImageArray, npIntegralImageArray]
+    | tuple[cpIntegralImageArray, cpIntegralImageArray]
+):
     """
     Вычисляет интегральное изображение.
 
     image: массив изображения
+    sq: флаг получения вместе с обычным интегральным изображением,
+        квадратичного интегрального изображениия
 
     Возвращается массив интегрального изображения с нулевой рамкой —
     кумулятивная сумма по каждому измерению
     """
     if CUPY_AVAILABLE and isinstance(image, cp.ndarray):
-        return _integral_image_gpu(image)
+        return _integral_image_gpu(image, sq=sq)
     if CV2_AVAILABLE:
-        return _integral_image_cv(image)
-    return _integral_image_custom(image)
+        return _integral_image_cv(image, sq=sq)
+    return _integral_image_custom(image, sq=sq)
 
-def _integral_image_cv(image: npImageArray) -> npt.NDArray:
+@overload
+def _integral_image_cv(
+    image: npImageArray,
+    sq: Literal[False]
+) -> npt.NDArray: ...
+@overload
+def _integral_image_cv(
+    image: npImageArray,
+    sq: Literal[True]
+) -> tuple[npt.NDArray, npt.NDArray]: ...
+def _integral_image_cv(
+    image: npImageArray,
+    sq: bool = False
+) -> npt.NDArray | tuple[npt.NDArray, npt.NDArray]:
     """
     Вычисляет интегральное изображение с помощью opencv.
 
     image: массив изображения
+    sq: флаг получения вместе с обычным интегральным изображением,
+        квадратичного интегрального изображениия
 
     Возвращается массив интегрального изображения с нулевой рамкой —
     кумулятивная сумма по каждому измерению
@@ -502,9 +531,39 @@ def _integral_image_cv(image: npImageArray) -> npt.NDArray:
             "opencv не установлен. "
             "Необходимо использовать функцию integral_image()"
         )
+    if sq:
+        return cv2.integral2(image)
     return cv2.integral(image)
 
-def _integral_image_gpu(image: cpImageArray) -> cpIntegralImageArray:
+@overload
+def _integral_image_gpu(
+    image: cpImageArray,
+    sq: Literal[False]
+) -> cpIntegralImageArray: ...
+@overload
+def _integral_image_gpu(
+    image: cpImageArray,
+    sq: Literal[True]
+) -> tuple[cpIntegralImageArray, cpIntegralImageArray]: ...
+@overload
+def _integral_image_gpu(
+    image: cpImageArray,
+    sq: bool = False
+) -> cpIntegralImageArray | tuple[cpIntegralImageArray, cpIntegralImageArray]: ...
+def _integral_image_gpu(
+    image: cpImageArray,
+    sq: bool = False
+) -> cpIntegralImageArray | tuple[cpIntegralImageArray, cpIntegralImageArray]:
+    """
+    Вычисляет интегральное изображение с помощью cupy.
+
+    image: массив изображения
+    sq: флаг получения вместе с обычным интегральным изображением,
+        квадратичного интегрального изображениия
+
+    Возвращается массив интегрального изображения с нулевой рамкой —
+    кумулятивная сумма по каждому измерению
+    """
     if not CUPY_AVAILABLE:
         raise ModuleNotFoundError(
             "cupy не установлен. "
@@ -518,29 +577,43 @@ def _integral_image_gpu(image: cpImageArray) -> cpIntegralImageArray:
         else cp.int64
     )
 
-    # Создаем нулевую рамку
-    if image.ndim == 3:
-        h, w, c = image.shape
-        integral = cp.zeros((h+1, w+1, c), dtype=dtype)
-        integral[1:, 1:, :] = cp.cumsum(cp.cumsum(image, axis=0), axis=1)
-    elif image.ndim == 2:
-        h, w = image.shape
-        integral = cp.zeros((h+1, w+1), dtype=dtype)
-        integral[1:, 1:] = cp.cumsum(cp.cumsum(image, axis=0), axis=1)
-    elif image.ndim == 1:
-        h = image.shape[0]
-        integral = np.zeros((h+1,), dtype=dtype)
-        integral[1:] = cp.cumsum(image, axis=0)
-    else:
-        raise ValueError("Поддерживаются только массивы с ndim от 1 до 3")
+    def get_integral(img: cpImageArray) -> cpIntegralImageArray:
+        # Создаем нулевую рамку
+        if img.ndim == 3:
+            h, w, c = img.shape
+            integral = cp.zeros((h+1, w+1, c), dtype=dtype)
+            integral[1:, 1:, :] = cp.cumsum(cp.cumsum(img, axis=0), axis=1)
+        elif img.ndim == 2:
+            h, w = img.shape
+            integral = cp.zeros((h+1, w+1), dtype=dtype)
+            integral[1:, 1:] = cp.cumsum(cp.cumsum(img, axis=0), axis=1)
+        elif img.ndim == 1:
+            h = img.shape[0]
+            integral = cp.zeros((h+1,), dtype=dtype)
+            integral[1:] = cp.cumsum(img, axis=0)
+        else:
+            raise ValueError("Поддерживаются только массивы с ndim от 1 до 3")
+        return integral
 
-    return integral
+    if sq:
+        image_sq = image ** 2
+        return get_integral(image), get_integral(image_sq)
+    return get_integral(image)
 
-def _integral_image_custom(image: npImageArray) -> npIntegralImageArray:
+@overload
+def _integral_image_custom(image: npImageArray, sq: Literal[False]) -> npIntegralImageArray: ...
+@overload
+def _integral_image_custom(image: npImageArray, sq: Literal[True]) -> tuple[npIntegralImageArray, npIntegralImageArray]: ...
+def _integral_image_custom(
+    image: npImageArray,
+    sq: bool = False
+) -> npIntegralImageArray | tuple[npIntegralImageArray, npIntegralImageArray]:
     """
     Вычисляет интегральное изображение с помощью чистого numpy.
 
     image: массив изображения
+    sq: флаг получения вместе с обычным интегральным изображением,
+        квадратичного интегрального изображениия
 
     Возвращается массив интегрального изображения с нулевой рамкой —
     кумулятивная сумма по каждому измерению
@@ -553,23 +626,28 @@ def _integral_image_custom(image: npImageArray) -> npIntegralImageArray:
         else np.int64
     )
 
-    # Создаем нулевую рамку
-    if image.ndim == 3:
-        h, w, c = image.shape
-        integral = np.zeros((h+1, w+1, c), dtype=dtype)
-        integral[1:, 1:, :] = image.astype(dtype, copy=False).cumsum(0).cumsum(1)
-    elif image.ndim == 2:
-        h, w = image.shape
-        integral = np.zeros((h+1, w+1), dtype=dtype)
-        integral[1:, 1:] = image.astype(dtype, copy=False).cumsum(0).cumsum(1)
-    elif image.ndim == 1:
-        h = image.shape[0]
-        integral = np.zeros((h+1,), dtype=dtype)
-        integral[1:] = image.astype(dtype, copy=False).cumsum(0)
-    else:
-        raise ValueError("Поддерживаются только массивы с ndim от 1 до 3")
+    def get_integral(img: npImageArray) -> npIntegralImageArray:
+        # Создаем нулевую рамку
+        if img.ndim == 3:
+            h, w, c = img.shape
+            integral = np.zeros((h+1, w+1, c), dtype=dtype)
+            integral[1:, 1:, :] = img.astype(dtype, copy=False).cumsum(0).cumsum(1)
+        elif img.ndim == 2:
+            h, w = img.shape
+            integral = np.zeros((h+1, w+1), dtype=dtype)
+            integral[1:, 1:] = img.astype(dtype, copy=False).cumsum(0).cumsum(1)
+        elif img.ndim == 1:
+            h = img.shape[0]
+            integral = np.zeros((h+1,), dtype=dtype)
+            integral[1:] = img.astype(dtype, copy=False).cumsum(0)
+        else:
+            raise ValueError("Поддерживаются только массивы с ndim от 1 до 3")
+        return integral
 
-    return integral
+    if sq:
+        image_sq = image ** 2
+        return get_integral(image), get_integral(image_sq)
+    return get_integral(image)
 
 def intensities(
     image_path: str | Path | BinaryIO,
@@ -580,7 +658,7 @@ def intensities(
 ) -> list[Vector]:
     '''
     https://gist.github.com/liamwhite/b023cdba4738e911293a8c610b98f987
-    Алгоритм основан на анализе средней интенсивности изображения и его четвертей
+    Алгоритм основан на анализе изображения и его четвертей
 
     image_path: путь к изображению
 
@@ -592,6 +670,8 @@ def intensities(
     blur_ksize: Размер ядра размытия Гаусса, (0,0) для отключения
 
     Возвращается список векторов, соответствующих изображению, полученному на входе
+    Первый вектор основан на средней интенсивности
+    Второй - на контрасте
     '''
     image = open_image(image_path)
 
@@ -620,42 +700,67 @@ def intensities(
         else:
             image_gpu = np.dot(image_gpu, BGR_COEFFS)
 
-    # Предвычисление интегрального изображения для яркости
-    integral = _integral_image(image_gpu)
+    # Предвычисление интегрального изображения для яркости и контраста
+    integral, integral_sq = _integral_image(image_gpu, sq=True)
 
     # Высота и ширина всего изображения
     y_size, x_size = image.shape[:2]
 
     # Расчёт итогового вектора, характеризующего изображение
-    features_list = []
-    features_list.append(_calculate_features(
-        integral,
-        partition_level,
-        (x_size, y_size),
-        use_threads = use_threads
-    ))
+    features_list: list[Vector] = []
+    features_integrals_list: list[tuple[npIntegralImageArray|cpIntegralImageArray, ...]] = [
+        (integral,),
+        (integral, integral_sq),
+    ]
+    if use_threads:
+        with ThreadPoolExecutor() as executor:
+            futures = []
+            for current_integral in features_integrals_list:
+                args = (current_integral, partition_level, (x_size, y_size), use_threads)
+                futures.append(executor.submit(_process_calculate_features, args))
+            for future in futures:
+                features_list.append(future.result())
+    else:
+        for current_integral in features_integrals_list:
+            if len(current_integral) == 2:
+                features_list.append(_calculate_features_sq(
+                    current_integral[0],
+                    current_integral[1],
+                    partition_level,
+                    (x_size, y_size),
+                    use_threads = use_threads
+                ))
+            else:
+                features_list.append(_calculate_features(
+                    current_integral[0],
+                    partition_level,
+                    (x_size, y_size),
+                    use_threads = use_threads
+                ))
     return features_list
 
-@overload
-def _calculate_features(
-    integral: npIntegralImageArray,
-    partition_level: int,
-    image_size: tuple[int, int],
-    use_threads: bool = True
-) -> npImageArray: ...
-@overload
-def _calculate_features(
-    integral: cpIntegralImageArray,
-    partition_level: int,
-    image_size: tuple[int, int],
-    use_threads: bool = True
-) -> cpImageArray: ...
+def _process_calculate_features(
+    args: tuple[
+        tuple[npIntegralImageArray | cpIntegralImageArray, ...],
+        int,
+        tuple[int, int],
+        bool
+    ]
+) -> Vector:
+    '''Получение компонент вектора для текущего уровня разбиения через интегральное изображение
+    Обёртка для _level_intensities()
+    '''
+    if len(args[0]) == 2:
+        return _calculate_features_sq(*(args[0]), *(args[1:]))
+    else:
+        return _calculate_features(args[0][0], *(args[1:]))
+
 def _calculate_features(
     integral: npIntegralImageArray | cpIntegralImageArray,
     partition_level: int,
     image_size: tuple[int, int],
     use_threads: bool = True
-) -> npImageArray | cpImageArray:
+) -> Vector:
     '''Вычисление вектора, характеризующего изображение
     '''
     if CUPY_AVAILABLE and isinstance(integral, cp.ndarray):
@@ -671,7 +776,7 @@ def _calculate_features(
             image_size,
             use_threads = False
         )
-        return features
+        return from_gpu(features)
 
     # Высота и ширина всего изображения
     x_size, y_size = image_size
@@ -709,7 +814,7 @@ def _calculate_features(
             features[features_idx:features_idx+part_features.size] = part_features
             features_idx += part_features.size
 
-    return features
+    return from_gpu(features)
 
 @overload
 def _process_level_intensities(
@@ -851,12 +956,233 @@ def _level_part_intensities(
         return 0.0
     # Быстрый расчёт суммы через интегральное изображение
     # и получение средней интенсивности в области
-    return float(np.divide(
-        _get_area_integral_sum(
-            integral, ((x0, x1), (y0, y1))
-        ),
-        area
-    ))
+    sum_val = _get_area_integral_sum(integral, ((x0, x1), (y0, y1)))
+    if CUPY_AVAILABLE and isinstance(integral, cp.ndarray):
+        feature = cp.divide(sum_val, area)
+    else:
+        feature = np.divide(sum_val, area)
+    return float(feature)
+
+def _calculate_features_sq(
+    integral: npIntegralImageArray | cpIntegralImageArray,
+    integral_sq: npIntegralImageArray | cpIntegralImageArray,
+    partition_level: int,
+    image_size: tuple[int, int],
+    use_threads: bool = True
+) -> Vector:
+    '''Вычисление вектора, характеризующего изображение
+    '''
+    if CUPY_AVAILABLE and isinstance(integral, cp.ndarray):
+        p = cp
+    else:
+        p = np
+    # Не разбиваем на потоки единственную операцию
+    if partition_level == 1:
+        features = _level_intensities_sq(
+            integral,
+            integral_sq,
+            partition_level,
+            image_size,
+            image_size,
+            use_threads = False
+        )
+        return from_gpu(features)
+
+    # Высота и ширина всего изображения
+    x_size, y_size = image_size
+
+    # Выделяем память для вектора, характеризующего изображение
+    features = p.empty(sum(level**2 for level in range(1, partition_level+1)), dtype=num_dtype)
+    features_idx = 0
+
+    if use_threads:
+        with ThreadPoolExecutor() as executor:
+            futures = []
+            for current_partition_level in range(1, partition_level + 1):
+                # Высота и ширина текущего разбиения
+                part_size = (x_size / current_partition_level, y_size / current_partition_level)
+                # Подготовка параметров уровня
+                args = (integral, integral_sq, current_partition_level, image_size, part_size, use_threads)
+                futures.append(executor.submit(_process_level_intensities_sq, args))
+            for future in futures:
+                part_features = future.result()
+                features[features_idx:features_idx+part_features.size] = part_features
+                features_idx += part_features.size
+    else:
+        for current_partition_level in range(1, partition_level + 1):
+            # Высота и ширина текущего разбиения
+            part_size = (x_size / current_partition_level, y_size / current_partition_level)
+
+            # Расчёт компонент итогового вектора
+            part_features = _level_intensities_sq(
+                integral,
+                integral_sq,
+                current_partition_level,
+                image_size,
+                part_size,
+                use_threads
+            )
+            features[features_idx:features_idx+part_features.size] = part_features
+            features_idx += part_features.size
+
+    return from_gpu(features)
+
+@overload
+def _process_level_intensities_sq(
+    args: tuple[
+        npIntegralImageArray,
+        npIntegralImageArray,
+        int,
+        tuple[int, int],
+        tuple[float, float] | None,
+        bool
+    ]
+) -> npImageArray: ...
+@overload
+def _process_level_intensities_sq(
+    args: tuple[
+        cpIntegralImageArray,
+        cpIntegralImageArray,
+        int,
+        tuple[int, int],
+        tuple[float, float] | None,
+        bool
+    ]
+) -> cpImageArray: ...
+def _process_level_intensities_sq(
+    args: tuple[
+        npIntegralImageArray | cpIntegralImageArray,
+        npIntegralImageArray | cpIntegralImageArray,
+        int,
+        tuple[int, int],
+        tuple[float, float] | None,
+        bool
+    ]
+) -> npImageArray | cpImageArray:
+    '''Получение компонент вектора для текущего уровня разбиения через интегральное изображение
+    Обёртка для _level_intensities_sq()
+    '''
+    return _level_intensities_sq(*args)
+
+@overload
+def _level_intensities_sq(
+    integral: npIntegralImageArray,
+    integral_sq: npIntegralImageArray,
+    current_partition_level: int,
+    image_size: tuple[int, int],
+    part_size: tuple[float, float] | None = None,
+    use_threads: bool = True
+) -> npImageArray: ...
+@overload
+def _level_intensities_sq(
+    integral: cpIntegralImageArray,
+    integral_sq: cpIntegralImageArray,
+    current_partition_level: int,
+    image_size: tuple[int, int],
+    part_size: tuple[float, float] | None = None,
+    use_threads: bool = True
+) -> cpImageArray: ...
+def _level_intensities_sq(
+    integral: npIntegralImageArray | cpIntegralImageArray,
+    integral_sq: npIntegralImageArray | cpIntegralImageArray,
+    current_partition_level: int,
+    image_size: tuple[int, int],
+    part_size: tuple[float, float] | None = None,
+    use_threads: bool = True
+) -> npImageArray | cpImageArray:
+    '''Получение компонент вектора для текущего уровня разбиения через интегральное изображение
+    '''
+    if CUPY_AVAILABLE and isinstance(integral, cp.ndarray):
+        p = cp
+    else:
+        p = np
+    # Высота и ширина всего изображения
+    x_size, y_size = image_size
+
+    # Не разбиваем на потоки единственную операцию
+    if current_partition_level == 1:
+        area = x_size*y_size
+        feature = p.sqrt((integral_sq[-1, -1] - integral[-1, -1]**2 / area) / area)
+        return p.array([feature], dtype=num_dtype, copy=False)
+
+    # Высота и ширина текущего разбиения
+    if part_size is None:
+        x_step = y_step = None
+    else:
+        x_step, y_step = part_size
+
+    # Выделяем память для компонент вектора,
+    # характеризующего изображение на текущем уровне разбиения
+    features = p.empty(current_partition_level**2, dtype=num_dtype)
+    features_idx = 0
+
+    if use_threads:
+        with ThreadPoolExecutor() as executor:
+            futures = []
+
+            for (y0, y1), (x0, x1) in generate_grid_coords(
+                x_size,
+                y_size,
+                current_partition_level,
+                x_step = x_step,
+                y_step = y_step
+            ):
+                args = (integral, integral_sq, ((x0, x1), (y0, y1)))
+                futures.append(executor.submit(_process_level_part_intensities_sq, args))
+
+            for future in futures:
+                single_feature = future.result()
+                features[features_idx] = single_feature
+                features_idx += 1
+    else:
+        for (y0, y1), (x0, x1) in generate_grid_coords(
+            x_size,
+            y_size,
+            current_partition_level,
+            x_step = x_step,
+            y_step = y_step
+        ):
+            # Расчёт компоненты итогового вектора
+            features[features_idx] = _level_part_intensities_sq(integral, integral_sq, ((x0, x1), (y0, y1)))
+            features_idx += 1
+
+    return features
+
+def _process_level_part_intensities_sq(
+    args: tuple[
+        npIntegralImageArray | cpIntegralImageArray,
+        npIntegralImageArray | cpIntegralImageArray,
+        tuple[tuple[int, int], tuple[int, int]]
+    ]
+) -> float:
+    '''Получение компоненты вектора для области через интегральное изображение
+    Обёртка для _level_part_intensities_sq()
+    '''
+    return _level_part_intensities_sq(*args)
+
+def _level_part_intensities_sq(
+    integral: npIntegralImageArray | cpIntegralImageArray,
+    integral_sq: npIntegralImageArray | cpIntegralImageArray,
+    coordinates: tuple[tuple[int, int], tuple[int, int]]
+) -> float:
+    '''Получение компоненты вектора для области через интегральное изображение
+    '''
+    (x0, x1), (y0, y1) = coordinates
+    # Площадь части
+    area = (y1 - y0) * (x1 - x0)
+
+    # Расчёт компоненты итогового вектора
+    if area == 0:
+        return 0.0
+    # Быстрый расчёт суммы через интегральное изображение
+    # и получение средней интенсивности в области
+    sum_val = _get_area_integral_sum(integral, coordinates)
+    sum_sq = _get_area_integral_sum(integral_sq, coordinates)
+    if CUPY_AVAILABLE and isinstance(integral, cp.ndarray):
+        feature = cp.sqrt((sum_sq - sum_val**2 / area) / area)
+    else:
+        feature = np.sqrt((sum_sq - sum_val**2 / area) / area)
+    return float(feature)
 
 def _get_area_integral_sum(
     integral: npIntegralImageArray | cpIntegralImageArray,
