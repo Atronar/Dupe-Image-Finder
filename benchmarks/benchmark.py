@@ -39,6 +39,18 @@ def measure(function: Callable[[], object], repeat: int = 5, number: int = 1) ->
     return statistics.median(samples)
 
 
+def measure_gpu(function: Callable[[], object], repeat: int = 5, number: int = 1) -> float:
+    """Медианное время операции на GPU с ожиданием завершения ядер."""
+    samples = []
+    for _ in range(repeat):
+        started = time.perf_counter()
+        for _ in range(number):
+            function()
+        df.cp.cuda.Stream.null.synchronize()
+        samples.append(time.perf_counter() - started)
+    return statistics.median(samples)
+
+
 def format_time(seconds: float) -> str:
     if seconds < 1e-3:
         return f"{seconds * 1e6:.1f} мкс"
@@ -106,6 +118,26 @@ def main() -> None:
             "similarity x10000",
             measure(lambda: df.similarity(color_vectors[0], color_vectors[1]), repeat=3, number=10000),
         ))
+
+        if df.CUPY_AVAILABLE and df._is_gpu_available():
+            # На 1024x1024 передача на GPU ещё не окупается, поэтому
+            # отдельно измеряем изображение, где GPU уже имеет смысл.
+            gpu_size = 2048
+            gpu_path = Path(temp_dir) / "benchmark_gpu.png"
+            make_image(gpu_path, gpu_size)
+            for use_gpu in (False, True):
+                results.append((
+                    f"intensities {gpu_size} level=4 gpu={use_gpu}",
+                    measure_gpu(
+                        lambda use_gpu=use_gpu: df.intensities(
+                            str(gpu_path),
+                            partition_level=4,
+                            use_threads=False,
+                            use_gpu=use_gpu,
+                        ),
+                        repeat=3,
+                    ),
+                ))
 
         print(f"Python: {sys.version.split()[0]}")
         print(f"NumPy: {np.__version__}, CuPy: {df.CUPY_AVAILABLE}, "
