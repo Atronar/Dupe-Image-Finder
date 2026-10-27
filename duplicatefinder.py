@@ -667,25 +667,35 @@ def _gauss_blur_custom(
     kernel_x = gaussian_kernel_1d(kx, sigma_x)
     kernel_y = gaussian_kernel_1d(ky, sigma_y)
 
+    # kx — размер ядра по ширине (ось 1), ky — по высоте (ось 0).
     pad_x = kx // 2
     pad_y = ky // 2
     if image.ndim > 2:
-        padded_image = np.pad(image, ((pad_x, pad_x), (pad_y, pad_y), (0, 0)), mode='reflect')
+        padded_image = np.pad(
+            image,
+            ((pad_y, pad_y), (pad_x, pad_x), (0, 0)),
+            mode='reflect'
+        )
     else:
-        padded_image = np.pad(image, ((pad_x, pad_x), (pad_y, pad_y)), mode='reflect')
+        padded_image = np.pad(
+            image,
+            ((pad_y, pad_y), (pad_x, pad_x)),
+            mode='reflect'
+        )
 
-    # Векторизованная свертка
-    blurred_x = np.apply_along_axis(
-        lambda c: np.convolve(c, kernel_x, mode='valid'),
-        1, padded_image
+    # Раздельная свёртка через скользящее окно: без Python-циклов
+    # и без apply_along_axis, который был очень медленным.
+    windows_x = np.lib.stride_tricks.sliding_window_view(
+        padded_image, kx, axis=1
     )
-    blurred = np.apply_along_axis(
-        lambda r: np.convolve(r, kernel_y, mode='valid'),
-        0, blurred_x
-    )
+    blurred_x = np.einsum('...i,i->...', windows_x, kernel_x, optimize=True)
 
-    blurred = np.clip(blurred, 0, 255).astype(num_dtype, copy=False)
-    return blurred
+    windows_y = np.lib.stride_tricks.sliding_window_view(
+        blurred_x, ky, axis=0
+    )
+    blurred = np.einsum('...i,i->...', windows_y, kernel_y, optimize=True)
+
+    return blurred.astype(num_dtype, copy=False)
 
 @overload
 def _integral_image(image: npImageArray, sq: Literal[False]) -> npIntegralImageArray: ...

@@ -373,3 +373,26 @@ def test_rect_sum_composites_alpha_on_white(df) -> None:
 
     transparent_red[..., 3] = 255.0
     assert df.rect_sum(transparent_red) == pytest.approx(54.23, abs=0.01)
+
+
+@pytest.mark.parametrize("shape", [(32, 40), (32, 40, 3)])
+def test_gauss_blur_custom_supports_non_square_kernel(df, shape) -> None:
+    """Неквадратное ядро не должно менять форму изображения."""
+    rng = np.random.default_rng(0)
+    image = rng.random(shape, dtype=np.float32) * 255.0
+
+    actual = df._gauss_blur_custom(image, (5, 3), sigma=1.2)
+
+    assert actual.shape == image.shape
+    assert actual.dtype == np.float32
+
+
+def test_gauss_blur_custom_matches_opencv_for_non_square_kernel(df) -> None:
+    cv2 = pytest.importorskip("cv2")
+    rng = np.random.default_rng(1)
+    image = rng.random((32, 40, 3), dtype=np.float32) * 255.0
+
+    actual = df._gauss_blur_custom(image, (5, 3), sigma=1.2)
+    expected = cv2.GaussianBlur(image, (5, 3), 1.2)
+
+    np.testing.assert_allclose(actual, expected, atol=1e-4)
