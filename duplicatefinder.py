@@ -11,7 +11,7 @@ is_similar_images() и is_similar()
 '''
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import BinaryIO, Generator, Iterable, Literal, TYPE_CHECKING, overload
+from typing import Any, BinaryIO, Generator, Iterable, Literal, TYPE_CHECKING, overload
 from io import BufferedIOBase
 import numpy as np
 import numpy.typing as npt
@@ -29,7 +29,13 @@ try:
     CV2_AVAILABLE = True
 except ImportError:
     CV2_AVAILABLE = False
-from cv2.typing import MatLike
+
+# MatLike нужен только для аннотаций. Без OpenCV подставляем Any,
+# чтобы импорт библиотеки не зависел от этой необязательной зависимости.
+if TYPE_CHECKING:
+    from cv2.typing import MatLike
+else:
+    MatLike = Any
 try:
     import pyvips
     VIPS_AVAILABLE = True
