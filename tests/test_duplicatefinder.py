@@ -243,6 +243,41 @@ def test_open_image_pil_normalizes_uint16(df, tmp_path: Path) -> None:
     assert actual.max() == pytest.approx(255.0, abs=0.5)
 
 
+def _save_jpeg_with_orientation(path: Path, orientation: int) -> None:
+    pil = pytest.importorskip("PIL.Image")
+    image = pil.new("RGB", (16, 8))
+    pixels = image.load()
+    for y in range(8):
+        for x in range(16):
+            pixels[x, y] = (255, 0, 0) if y < 4 else (0, 0, 255)
+    exif = image.getexif()
+    exif[274] = orientation
+    # 4:4:4 без цветовой субдискретизации, чтобы OpenCV и Pillow
+    # одинаково декодировали границу красной и синей областей.
+    image.save(path, format="JPEG", exif=exif, quality=100, subsampling=0)
+
+
+def test_open_image_pil_applies_exif_orientation(df, tmp_path: Path) -> None:
+    path = tmp_path / "rotated.jpg"
+    _save_jpeg_with_orientation(path, 6)
+
+    actual = df.open_image_pil(str(path))
+    assert actual.shape == (16, 8, 3)
+
+
+@pytest.mark.parametrize("orientation", range(2, 9))
+def test_open_image_cv_applies_exif_orientation(df, tmp_path: Path, orientation: int) -> None:
+    if not getattr(df, "CV2_AVAILABLE", False):
+        pytest.skip("OpenCV не установлен")
+    path = tmp_path / f"rotated-cv-{orientation}.jpg"
+    _save_jpeg_with_orientation(path, orientation)
+
+    actual = df.open_image_cv(str(path))
+    expected = df.open_image_pil(str(path))
+    assert actual.shape == expected.shape
+    np.testing.assert_allclose(actual, expected, atol=3.0)
+
+
 def test_identical_vectors_are_similar(df, color_png: Path) -> None:
     vectors = df.intensities(
         str(color_png),

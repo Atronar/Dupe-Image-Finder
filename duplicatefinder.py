@@ -44,6 +44,7 @@ except ImportError:
     VIPS_AVAILABLE = False
 try:
     import PIL.Image as pil
+    import PIL.ImageOps as pil_ops
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
@@ -129,6 +130,116 @@ def _normalize_image_range(image: npt.NDArray[Any]) -> npImageArray:
         return (image.astype(np.float64) * (255.0 / max_value)).astype(num_dtype)
     return image.astype(num_dtype)
 
+def _read_image_header(source: str | Path | BinaryIO, size: int = 262144) -> bytes:
+    """Читает начало файла, не сдвигая позицию файлового объекта."""
+    if _is_binary_file_like(source):
+        position = source.tell()
+        try:
+            return source.read(size)
+        finally:
+            source.seek(position)
+    with open(source, "rb") as image_file:
+        return image_file.read(size)
+
+def _get_exif_orientation_tiff(tiff: bytes) -> int:
+    """Возвращает Orientation (тег 0x0112) из TIFF/EXIF-блока."""
+    if len(tiff) < 8:
+        return 1
+    if tiff[:2] == b"II":
+        byte_order = "little"
+    elif tiff[:2] == b"MM":
+        byte_order = "big"
+    else:
+        return 1
+    if int.from_bytes(tiff[2:4], byte_order) != 42:
+        return 1
+    ifd_offset = int.from_bytes(tiff[4:8], byte_order)
+    if ifd_offset + 2 > len(tiff):
+        return 1
+    entries = int.from_bytes(tiff[ifd_offset:ifd_offset + 2], byte_order)
+    position = ifd_offset + 2
+    for _ in range(entries):
+        if position + 12 > len(tiff):
+            break
+        tag = int.from_bytes(tiff[position:position + 2], byte_order)
+        field_type = int.from_bytes(tiff[position + 2:position + 4], byte_order)
+        count = int.from_bytes(tiff[position + 4:position + 8], byte_order)
+        if tag == 0x0112 and count >= 1:
+            if field_type == 3:  # SHORT
+                return int.from_bytes(tiff[position + 8:position + 10], byte_order)
+            if field_type == 4:  # LONG
+                return int.from_bytes(tiff[position + 8:position + 12], byte_order)
+        position += 12
+    return 1
+
+def _get_exif_orientation_jpeg(jpeg: bytes) -> int:
+    """Ищет Orientation в APP1-сегменте JPEG."""
+    position = 2  # пропускаем SOI
+    while position + 4 <= len(jpeg):
+        if jpeg[position] != 0xFF:
+            position += 1
+            continue
+        marker = jpeg[position + 1]
+        if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+            position += 2
+            continue
+        length = int.from_bytes(jpeg[position + 2:position + 4], "big")
+        if length < 2:
+            return 1
+        segment_end = position + 2 + length
+        if marker == 0xE1 and jpeg[position + 4:position + 10] == b"Exif\x00\x00":
+            return _get_exif_orientation_tiff(jpeg[position + 10:segment_end])
+        if marker == 0xDA:  # начало сжатых данных
+            return 1
+        position = segment_end
+    return 1
+
+def _get_exif_orientation_png(png: bytes) -> int:
+    """Ищет Orientation в PNG-чанке eXIf."""
+    position = 8  # пропускаем сигнатуру PNG
+    while position + 8 <= len(png):
+        length = int.from_bytes(png[position:position + 4], "big")
+        chunk_type = png[position + 4:position + 8]
+        if chunk_type == b"eXIf":
+            return _get_exif_orientation_tiff(png[position + 8:position + 8 + length])
+        if chunk_type == b"IEND":
+            break
+        position += 12 + length
+    return 1
+
+def _get_exif_orientation(image_data: bytes) -> int:
+    """Возвращает EXIF Orientation (1, если тега нет или формат неизвестен)."""
+    try:
+        if image_data[:2] == b"\xff\xd8":
+            return _get_exif_orientation_jpeg(image_data)
+        if image_data[:8] == b"\x89PNG\r\n\x1a\n":
+            return _get_exif_orientation_png(image_data)
+        if image_data[:4] in (b"II*\x00", b"MM\x00*"):
+            return _get_exif_orientation_tiff(image_data)
+    except (IndexError, ValueError):
+        pass
+    return 1
+
+def _apply_exif_orientation(image: npt.NDArray[Any], orientation: int) -> npt.NDArray[Any]:
+    """Поворачивает/отражает изображение согласно EXIF Orientation."""
+    if orientation == 2:
+        image = image[:, ::-1]
+    elif orientation == 3:
+        image = image[::-1, ::-1]
+    elif orientation == 4:
+        image = image[::-1, :]
+    elif orientation == 5:
+        image = np.swapaxes(image, 0, 1)
+    elif orientation == 6:
+        image = np.rot90(image, k=-1)
+    elif orientation == 7:
+        image = np.flip(np.swapaxes(image, 0, 1), axis=(0, 1))
+    elif orientation == 8:
+        image = np.rot90(image, k=1)
+    else:
+        return image
+    return np.ascontiguousarray(image)
+
 def open_image(image_path: str|Path|BinaryIO) -> npImageArray:
     """Функция, открывающая изображение по его пути, возвращается матрица пикселей в BGR
     image_path: путь к изображению
@@ -200,6 +311,9 @@ def open_image_vips(
         image: pyvips.Image = img
     del img
 
+    # libvips умеет применять EXIF-ориентацию самостоятельно.
+    image = image.autorot()
+
     # удаляем альфа-канал, заменяя его белым цветом
     if image.hasalpha():
         # У 16-битных и float-изображений белый — не 255.
@@ -260,6 +374,9 @@ def open_image_cv(image_path: str|Path|BinaryIO) -> npImageArray:
             raise FileNotFoundError("Невозможно прочитать файл")
         return img
     img = load_image(image_path, cv2.IMREAD_UNCHANGED)
+    # IMREAD_UNCHANGED не применяет EXIF-ориентацию, поэтому делаем это сами.
+    orientation = _get_exif_orientation(_read_image_header(image_path))
+    img = _apply_exif_orientation(img, orientation)
     # Приводим к единому диапазону: uint16 и float не должны попадать
     # в расчёты как 0…65535 или 0…1.
     img = _normalize_image_range(img)
@@ -320,6 +437,8 @@ def open_image_pil(image_path: str|Path|BinaryIO) -> npImageArray:
         )
 
     with pil.open(image_path) as img:
+        # Pillow по умолчанию не применяет EXIF-ориентацию.
+        img = pil_ops.exif_transpose(img)
         convert_to = None
         mode = img.mode
         # I;16, I и F — одноканальные изображения с расширенным диапазоном.
