@@ -640,10 +640,29 @@ def _gauss_blur_cv(
         )
 
     if isinstance(blur_ksize, int):
-        blur_ksize = (blur_ksize, blur_ksize)
-    if not all(blur_ksize):
+        kx = ky = blur_ksize
+    else:
+        kx, ky = blur_ksize
+    if not kx or not ky:
         return image
-    return cv2.GaussianBlur(image, blur_ksize, sigma).astype(num_dtype, copy=False)
+
+    # Явно задаём sigma и граничные условия, чтобы результат совпадал
+    # с собственной реализацией и GPU-путём. При sigma=0 OpenCV для
+    # маленьких ядер использует фиксированные коэффициенты, а не
+    # формулу Гаусса.
+    if np.isclose(sigma, 0):
+        sigma_x = 0.15 * kx + 0.35
+        sigma_y = 0.15 * ky + 0.35
+    else:
+        sigma_x = sigma_y = sigma
+
+    return cv2.GaussianBlur(
+        image,
+        (kx, ky),
+        sigmaX=sigma_x,
+        sigmaY=sigma_y,
+        borderType=cv2.BORDER_REFLECT,
+    ).astype(num_dtype, copy=False)
 
 def _gauss_blur_gpu(
     image: cpImageArray,
@@ -656,15 +675,31 @@ def _gauss_blur_gpu(
             "Необходимо использовать функцию gauss_blur()"
         )
 
-    if isinstance(blur_ksize, tuple):
-        blur_ksize = min(blur_ksize)
-    if not blur_ksize:
+    if isinstance(blur_ksize, int):
+        kx = ky = blur_ksize
+    else:
+        kx, ky = blur_ksize
+    if not kx or not ky:
         return image
 
     if np.isclose(sigma, 0):
-        sigma = 0.15 * blur_ksize + 0.35
+        sigma_x = 0.15 * kx + 0.35
+        sigma_y = 0.15 * ky + 0.35
+    else:
+        sigma_x = sigma_y = sigma
 
-    return cp_gaussian_filter(image, sigma=sigma)
+    # Для цветного изображения ось каналов размывать нельзя: иначе
+    # gaussian_filter смешивает B, G и R между собой.
+    if image.ndim == 3:
+        sigmas = (sigma_y, sigma_x, 0)
+    else:
+        sigmas = (sigma_y, sigma_x)
+
+    # OpenCV задаёт размер ядра напрямую. В scipy/cupyx радиус ядра
+    # определяется как truncate * sigma, поэтому подбираем truncate
+    # так, чтобы для квадратного ядра получить тот же размер.
+    truncate = (max(kx, ky) // 2) / max(sigma_x, sigma_y)
+    return cp_gaussian_filter(image, sigma=sigmas, truncate=truncate)
 
 def _gauss_blur_custom(
     image: npImageArray,
@@ -972,25 +1007,30 @@ def _sobel_gpu(image: cpImageArray, dx: int, dy: int) -> cpImageArray:
             "cupy не установлен. "
             "Необходимо использовать функцию _sobel()"
         )
+    # Считаем в float64: на float32 свёртка по константному изображению
+    # даёт ненулевой градиент порядка 1e-6, который после интегрирования
+    # квадрата превращается в заметную ложную «текстуру».
+    work_image = image.astype(cp.float64, copy=False)
+
     # Ядра Собеля
     sobel_x_kernel = cp.array([
         [-1, 0, 1],
         [-2, 0, 2],
         [-1, 0, 1]
-    ], dtype=cp.float32)
+    ], dtype=cp.float64)
     sobel_y_kernel = cp.array([
         [-1, -2, -1],
         [0,  0,  0],
         [1,  2,  1]
-    ], dtype=cp.float32)
+    ], dtype=cp.float64)
 
     # Применение свертки
-    result = cp.zeros_like(image)
+    result = cp.zeros_like(work_image)
     if dx > 0:
-        result += cp_convolve(image, sobel_x_kernel, mode='reflect')
+        result += cp_convolve(work_image, sobel_x_kernel, mode='reflect')
     elif dy > 0:
-        result += cp_convolve(image, sobel_y_kernel, mode='reflect')
-    return result
+        result += cp_convolve(work_image, sobel_y_kernel, mode='reflect')
+    return result.astype(num_dtype, copy=False)
 
 def _sobel_custom(image: npImageArray, dx: int, dy: int) -> npImageArray:
     """
