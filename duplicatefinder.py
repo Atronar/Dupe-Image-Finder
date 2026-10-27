@@ -97,6 +97,38 @@ def _is_binary_file_like(obj: object) -> bool:
     """
     return isinstance(obj, IOBase) and not isinstance(obj, TextIOBase)
 
+def _normalize_image_range(image: npt.NDArray[Any]) -> npImageArray:
+    """Приводит изображение к float32 в диапазоне [0, 255].
+
+    Разные декодеры возвращают разные типы и диапазоны: uint8 — 0…255,
+    uint16 — 0…65535, float — 0…1 или 0…255. Для сравнения векторов
+    важно, чтобы одна и та же картинка после любого декодера давала
+    одинаковые значения.
+    """
+    if image.dtype == np.uint8:
+        return image.astype(num_dtype, copy=False)
+    if image.dtype == np.uint16:
+        return image.astype(num_dtype) / 257.0
+    if image.dtype == np.int16:
+        return np.clip(image, 0, 65535).astype(num_dtype) / 257.0
+    if np.issubdtype(image.dtype, np.floating):
+        result = image.astype(num_dtype, copy=False)
+        if result.size == 0:
+            return result
+        max_value = float(np.max(result))
+        if max_value <= 1.0 + 1e-6:
+            result = result * 255.0
+        elif max_value > 255.0:
+            result = result * (255.0 / max_value)
+        return np.clip(result, 0.0, 255.0).astype(num_dtype, copy=False)
+    # Целочисленные типы больше 16 бит и прочие: масштабируем по максимуму.
+    if image.size == 0:
+        return image.astype(num_dtype)
+    max_value = float(np.max(image))
+    if max_value > 255.0:
+        return (image.astype(np.float64) * (255.0 / max_value)).astype(num_dtype)
+    return image.astype(num_dtype)
+
 def open_image(image_path: str|Path|BinaryIO) -> npImageArray:
     """Функция, открывающая изображение по его пути, возвращается матрица пикселей в BGR
     image_path: путь к изображению
@@ -170,11 +202,21 @@ def open_image_vips(
 
     # удаляем альфа-канал, заменяя его белым цветом
     if image.hasalpha():
-        image = image.flatten(background=255)
+        # У 16-битных и float-изображений белый — не 255.
+        if image.format == "ushort":
+            background = 65535.0
+        elif image.format in ("float", "double"):
+            background = 1.0 if image.max() <= 1.0 else 255.0
+        else:
+            background = 255.0
+        image = image.flatten(background=background)
 
     # Обработка Grayscale или одноканальных данных
     if image.bands == 1 or image.interpretation in ["b-w", "greyscale"]:
-        return image.numpy(dtype=num_dtype).squeeze()  # удаление оси каналов (H, W)
+        array = image.numpy(dtype=num_dtype)
+        if array.ndim == 3:
+            array = array[..., 0]  # удаление оси каналов (H, W)
+        return _normalize_image_range(array)
     # Конвертация CMYK → RGB
     elif image.interpretation == "cmyk":
         # Используем встроенный профиль sRGB
@@ -184,7 +226,7 @@ def open_image_vips(
         # Конвертация в RGB через промежуточное пространство
         image = image.colourspace("srgb")
     # Конвертация RGB → BGR
-    return image[2::-1].numpy(dtype=num_dtype)
+    return _normalize_image_range(image[2::-1].numpy(dtype=num_dtype))
 
 def open_image_cv(image_path: str|Path|BinaryIO) -> npImageArray:
     """Открытие изображения в BGR с помощью opencv
@@ -218,6 +260,9 @@ def open_image_cv(image_path: str|Path|BinaryIO) -> npImageArray:
             raise FileNotFoundError("Невозможно прочитать файл")
         return img
     img = load_image(image_path, cv2.IMREAD_UNCHANGED)
+    # Приводим к единому диапазону: uint16 и float не должны попадать
+    # в расчёты как 0…65535 или 0…1.
+    img = _normalize_image_range(img)
 
     channels = 1 if img.ndim == 2 else img.shape[2]
     is_grayscale = channels < 3
@@ -231,7 +276,7 @@ def open_image_cv(image_path: str|Path|BinaryIO) -> npImageArray:
             and np.array_equal(img[..., 0], img[..., 2])
         ):
             img = img[..., 0]
-        return img.astype(num_dtype, copy=False)
+        return img
 
     # Приведение фактического серого из RGBA в градации серого без потери альфа-канала
     # Сравнение значений каналов
@@ -240,20 +285,26 @@ def open_image_cv(image_path: str|Path|BinaryIO) -> npImageArray:
         and np.array_equal(img[..., 0], img[..., 1])
         and np.array_equal(img[..., 0], img[..., 2])
     ):
-        img = img[:, :, [0, 3]].view(np.uint8).reshape(*img.shape[:2], 2)
+        # Берём каналы без view: для uint16 view(np.uint8) даёт
+        # неверную форму и портит значения.
+        img = img[..., [0, 3]]
         is_grayscale = True
 
     # Удаление альфа-канала
     # Простая конвертация заменяет альфу на чёрный вместо белого, что недопустимо
     # Нормализация альфа-канала в [0, 1]
-    alpha = img[..., -1].astype(num_dtype, copy=False)[..., np.newaxis] / 255.0
-    color = img[..., :-1].astype(num_dtype, copy=False)
+    alpha = img[..., -1][..., np.newaxis] / 255.0
+    color = img[..., :-1]
     if is_grayscale:
         white = 255
     else:
         white = np.array([255.0, 255.0, 255.0], dtype=num_dtype)
     image = color * alpha + white * (1 - alpha)
-    return image.astype(num_dtype).squeeze()
+    # squeeze() удалял бы и пространственные оси у изображений 1×N,
+    # поэтому убираем только канал.
+    if is_grayscale:
+        return image[..., 0].astype(num_dtype, copy=False)
+    return image.astype(num_dtype, copy=False)
 
 def open_image_pil(image_path: str|Path|BinaryIO) -> npImageArray:
     """Открытие изображения в BGR с помощью PIL
@@ -271,65 +322,85 @@ def open_image_pil(image_path: str|Path|BinaryIO) -> npImageArray:
     with pil.open(image_path) as img:
         convert_to = None
         mode = img.mode
-        is_grayscale = mode in ['L', 'LA']
+        # I;16, I и F — одноканальные изображения с расширенным диапазоном.
+        is_grayscale = mode in ['L', 'LA'] or mode.startswith('I') or mode == 'F'
         has_alpha = mode in ['RGBA', 'LA']
         is_rgb = 'RGB' in mode
+
         # Изображения с палитрой и альфа
-        if img.mode == 'P':
-            mode = img.palette.mode
-            if "transparency" in img.info or mode in ['RGBA', 'LA']:
+        if mode in ('P', 'PA'):
+            palette_mode = img.palette.mode if img.palette is not None else 'RGB'
+            if "transparency" in img.info or palette_mode in ['RGBA', 'LA']:
                 has_alpha = True
-                if mode == 'LA':
+                if palette_mode == 'LA':
                     convert_to = 'LA'
                     is_grayscale = True
+                    is_rgb = False
                 else:
                     convert_to = 'RGBA'
+                    is_grayscale = False
                     is_rgb = True
-            elif mode == 'L':
+            elif palette_mode == 'L':
                 convert_to = 'L'
                 is_grayscale = True
-            elif mode == 'RGB':
+                is_rgb = False
+            elif palette_mode == 'RGB':
                 convert_to = 'RGB'
+                is_grayscale = False
                 is_rgb = True
+        elif 'transparency' in img.info and not has_alpha:
+            # Например, RGB с прозрачным цветом: Pillow умеет это только через RGBA.
+            convert_to = 'RGBA'
+            has_alpha = True
+            is_grayscale = False
+            is_rgb = True
 
-        # Приведение фактического серого из RGB(A) в градации серого без потери альфа-канала
-        # Сравнение значений каналов
-        arr = np.asarray(img, num_dtype)
+        # Сначала конвертируем палитру/специальные режимы, и только потом
+        # анализируем каналы: у режима P массив содержит индексы палитры,
+        # а не значения RGB.
+        if convert_to:
+            img = img.convert(convert_to)
+
+        arr = _normalize_image_range(np.asarray(img))
+
+        # Приведение фактического серого из RGB(A) в градации серого
+        # без потери альфа-канала.
         if (
             is_rgb
+            and arr.ndim == 3
+            and arr.shape[2] >= 3
             and np.array_equal(arr[..., 0], arr[..., 1])
             and np.array_equal(arr[..., 0], arr[..., 2])
         ):
             convert_to = 'LA' if has_alpha else 'L'
+            img = img.convert(convert_to)
+            arr = _normalize_image_range(np.asarray(img))
             is_grayscale = True
             is_rgb = False
-
-        if convert_to:
-            img = img.convert(convert_to)
-            arr = np.asarray(img, num_dtype)
 
         # Удаление альфа-канала
         # Простая конвертация заменяет альфу на чёрный вместо белого, что недопустимо
         if has_alpha:
-            alpha = (arr[:, :, -1] * (1/255))       # [0, 1]
-            color = arr[:, :, :-1].squeeze()        # [0, 255]
+            alpha = arr[..., -1] / 255.0       # [0, 1]
+            color = arr[..., :-1]              # [0, 255]
             if is_grayscale:
-                white = 255
+                image = color[..., 0] * alpha + 255.0 * (1 - alpha)
             else:
-                alpha = alpha[..., np.newaxis]
                 white = np.array([255.0, 255.0, 255.0], dtype=num_dtype)
-            image = color * alpha + white * (1 - alpha)
-            return image.astype(num_dtype, copy=False)
-        # Серый и RGB конвертировать не нужно
-        if not (is_grayscale or is_rgb):
-            img = img.convert('RGB')
-        image = np.asarray(img, dtype=num_dtype)
+                image = color * alpha[..., np.newaxis] + white * (1 - alpha[..., np.newaxis])
+        else:
+            # Серый и RGB конвертировать не нужно
+            if not (is_grayscale or is_rgb):
+                img = img.convert('RGB')
+                arr = _normalize_image_range(np.asarray(img))
+                is_rgb = True
+            image = arr
 
     if not is_grayscale:
         # RGB -> BGR
         image = image[..., ::-1]
 
-    return image
+    return np.ascontiguousarray(image, dtype=num_dtype)
 
 @overload
 def _gauss_blur(

@@ -192,6 +192,57 @@ def test_open_image_returns_bgr(df, color_png: Path) -> None:
     np.testing.assert_allclose(image[0, 0], [10, 20, 30], atol=1)
 
 
+def test_open_image_cv_normalizes_uint16(df, tmp_path: Path) -> None:
+    """16-битное изображение должно приходить в том же диапазоне 0…255."""
+    cv2 = pytest.importorskip("cv2")
+    path = tmp_path / "gray16.png"
+    image = np.full((32, 32), 65535, dtype=np.uint16)
+    assert cv2.imwrite(str(path), image)
+
+    actual = df.open_image_cv(str(path))
+    assert actual.dtype == np.float32
+    assert actual.ndim == 2
+    assert actual.max() == pytest.approx(255.0, abs=0.5)
+
+
+def test_open_image_pil_returns_bgr_for_rgba(df, tmp_path: Path) -> None:
+    """Полупрозрачный RGBA должен давать тот же BGR, что и OpenCV."""
+    pil = pytest.importorskip("PIL.Image")
+    path = tmp_path / "rgba.png"
+    pil.new("RGBA", (8, 8), (10, 20, 30, 128)).save(path)
+
+    actual = df.open_image_pil(str(path))
+    assert actual.dtype == np.float32
+    np.testing.assert_allclose(actual[0, 0], [142.06, 137.04, 132.02], atol=0.6)
+    if getattr(df, "CV2_AVAILABLE", False):
+        np.testing.assert_allclose(actual, df.open_image_cv(str(path)), atol=0.6)
+
+
+def test_open_image_pil_handles_palette_image(df, tmp_path: Path) -> None:
+    """Палитровое изображение не должно приниматься за серое."""
+    pil = pytest.importorskip("PIL.Image")
+    path = tmp_path / "palette.png"
+    image = pil.new("P", (8, 8), 1)
+    image.putpalette([0, 0, 0, 255, 0, 0])
+    image.save(path)
+
+    actual = df.open_image_pil(str(path))
+    assert actual.dtype == np.float32
+    np.testing.assert_allclose(actual[0, 0], [0.0, 0.0, 255.0], atol=0.5)
+
+
+def test_open_image_pil_normalizes_uint16(df, tmp_path: Path) -> None:
+    """Pillow для 16-битного PNG тоже должен вернуть диапазон 0…255."""
+    pil = pytest.importorskip("PIL.Image")
+    path = tmp_path / "gray16-pil.png"
+    image = pil.new("I;16", (16, 16), 65535)
+    image.save(path)
+
+    actual = df.open_image_pil(str(path))
+    assert actual.dtype == np.float32
+    assert actual.max() == pytest.approx(255.0, abs=0.5)
+
+
 def test_identical_vectors_are_similar(df, color_png: Path) -> None:
     vectors = df.intensities(
         str(color_png),
