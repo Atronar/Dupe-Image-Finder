@@ -1060,7 +1060,7 @@ def _level_intensities(
     # Не разбиваем на потоки единственную операцию
     if current_partition_level == 1:
         feature = p.divide(integral[-1, -1], x_size*y_size)
-        return p.array([feature], dtype=num_dtype, copy=False)
+        return p.asarray(feature, dtype=num_dtype).reshape(1)
 
     # Высота и ширина текущего разбиения
     if part_size is None:
@@ -1278,7 +1278,7 @@ def _level_intensities_sq(
     if current_partition_level == 1:
         area = x_size*y_size
         feature = p.sqrt((integral_sq[-1, -1] - integral[-1, -1]**2 / area) / area)
-        return p.array([feature], dtype=num_dtype, copy=False)
+        return p.asarray(feature, dtype=num_dtype).reshape(1)
 
     # Высота и ширина текущего разбиения
     if part_size is None:
