@@ -422,3 +422,27 @@ def test_similarity_rejects_negative_threshold(df) -> None:
 
     with pytest.raises(ValueError):
         df.is_similar(vector, vector, threshold=-0.1)
+
+
+@pytest.mark.parametrize(
+    ("size", "level"),
+    [((10, 10), 3), ((13, 7), 4), ((1024, 768), 7)],
+)
+def test_generate_grid_coords_covers_whole_image(df, size, level) -> None:
+    coords = list(df.generate_grid_coords(size[0], size[1], level))
+
+    assert len(coords) == level * level
+    x_intervals = [x for _, x in coords]
+    y_intervals = [y for y, _ in coords]
+    assert min(x0 for x0, _ in x_intervals) == 0
+    assert max(x1 for _, x1 in x_intervals) == size[0]
+    assert min(y0 for y0, _ in y_intervals) == 0
+    assert max(y1 for _, y1 in y_intervals) == size[1]
+
+    # Соседние регионы не должны пересекаться и оставлять промежутки.
+    xs = sorted(set(x_intervals))
+    ys = sorted(set(y_intervals))
+    for (_, x1), (x0, _) in zip(xs, xs[1:]):
+        assert x1 == x0
+    for (_, y1), (y0, _) in zip(ys, ys[1:]):
+        assert y1 == y0

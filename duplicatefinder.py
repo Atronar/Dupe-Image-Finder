@@ -1372,17 +1372,24 @@ def generate_grid_coords(
 
     Yields:
         Пары ((y0, y1), (x0, x1)) - координаты регионов
-    '''
-    # Чистые размеры части без округлений
-    x_step = x_step or (x_size / side_partitions_num)
-    y_step = y_step or (y_size / side_partitions_num)
 
-    x_points = np.floor(np.arange(0, x_size+1, x_step)).astype(int, copy=False)
-    x_starts = x_points[:-1]
-    x_ends = x_points[1:]
-    y_points = np.floor(np.arange(0, y_size+1, y_step)).astype(int, copy=False)
-    y_starts = y_points[:-1]
-    y_ends = y_points[1:]
+    Последняя граница по каждой оси всегда совпадает с размером
+    изображения, поэтому при неделящемся размере последний регион
+    получается чуть больше остальных, но изображение покрывается целиком.
+    '''
+    if x_step is None:
+        x_step = x_size / side_partitions_num
+    if y_step is None:
+        y_step = y_size / side_partitions_num
+
+    x_points, y_points = _grid_points(
+        x_size,
+        y_size,
+        side_partitions_num,
+        (x_step, y_step)
+    )
+    x_starts, x_ends = x_points[:-1], x_points[1:]
+    y_starts, y_ends = y_points[:-1], y_points[1:]
 
     # Разбиение слева направо
     x_parts = list(zip(x_starts, x_ends))
