@@ -113,6 +113,35 @@ def test_runtime_without_cupy(large_color_png: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
+def test_gpu_probe_handles_unavailable_cuda(df, monkeypatch) -> None:
+    """Импортируемый CuPy без рабочей CUDA не должен приводить к падению."""
+    if not df.CUPY_AVAILABLE:
+        pytest.skip("CuPy не установлен")
+
+    monkeypatch.setattr(df, "_gpu_available", None)
+
+    def fail() -> int:
+        raise RuntimeError("CUDA недоступна")
+
+    monkeypatch.setattr(df.cp.cuda.runtime, "getDeviceCount", fail)
+
+    assert df._is_gpu_available() is False
+    array = np.zeros((2, 2), dtype=df.num_dtype)
+    assert df.to_gpu(array) is array
+
+
+def test_intensities_falls_back_to_cpu_without_cuda(df, color_png: Path, monkeypatch) -> None:
+    """При недоступной CUDA обработка продолжается на CPU."""
+    monkeypatch.setattr(df, "_gpu_available", False)
+    result = df.intensities(
+        str(color_png),
+        partition_level=1,
+        use_threads=False,
+        use_gpu=True,
+    )
+    _assert_vectors(result, partition_level=1)
+
+
 def test_intensities_gray_numpy2(df, gray_png: Path) -> None:
     """Серое изображение должно обрабатываться на NumPy 2 без ошибок копирования."""
     result = df.intensities(

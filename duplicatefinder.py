@@ -71,13 +71,42 @@ if CUPY_AVAILABLE:
     BGR_COEFFS_CUPY = cp.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
 BGR_COEFFS = np.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
 
+# Результат проверки CUDA кэшируется: при отсутствии драйвера или устройства
+# каждая попытка инициализации CuPy может занимать заметное время.
+_gpu_available: bool | None = None
+
+def _is_gpu_available() -> bool:
+    """Проверяет, доступен ли GPU через CuPy.
+
+    CuPy может импортироваться даже без рабочего CUDA (например, если
+    установлен пакет, но нет драйвера). В этом случае библиотека должна
+    продолжить работу на CPU, а не падать при первом обращении к GPU.
+    """
+    global _gpu_available
+    if not CUPY_AVAILABLE:
+        return False
+    if _gpu_available is None:
+        try:
+            _gpu_available = cp.cuda.runtime.getDeviceCount() > 0
+        except Exception:
+            _gpu_available = False
+    return _gpu_available
+
 def to_gpu(arr: npImageArray) -> npImageArray | cpImageArray:
-    if CUPY_AVAILABLE:
+    """Переносит массив на GPU, если это возможно.
+
+    При отсутствии CUDA, нехватке памяти или ошибке инициализации
+    возвращается исходный массив: вычисления продолжатся на CPU.
+    """
+    if not _is_gpu_available():
+        return arr
+    try:
         mem = cp.cuda.Device().mem_info
         if arr.nbytes > mem[0] * 0.9:  # Не использовать более 90% свободной памяти
             return arr
         return cp.asarray(arr, dtype=num_dtype)
-    return arr
+    except Exception:
+        return arr
 
 def _is_cupy_array(arr: object) -> bool:
     """Проверяет, что массив является массивом CuPy.
@@ -1074,12 +1103,12 @@ def intensities(
     ):
         use_gpu = False
 
-    if use_gpu:
+    if use_gpu and _is_gpu_available():
         image_gpu = to_gpu(image)
-        if not _is_cupy_array(image_gpu):
-            use_gpu = False
+        use_gpu = _is_cupy_array(image_gpu)
     else:
         image_gpu = image
+        use_gpu = False
 
     # Размытие изображения
     image_gpu = _gauss_blur(image_gpu, blur_ksize)
