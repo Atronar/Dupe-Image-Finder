@@ -1152,93 +1152,33 @@ def _calculate_features(
     use_threads: bool = True
 ) -> Vector:
     '''Вычисление вектора, характеризующего изображение
+
+    Уровни обходятся последовательно: после векторизации каждый уровень
+    считается одной операцией, и пул потоков только добавляет накладные расходы.
     '''
-    if CUPY_AVAILABLE and isinstance(integral, cp.ndarray):
-        p = cp
-    else:
-        p = np
-    # Не разбиваем на потоки единственную операцию
-    if partition_level == 1:
-        features = _level_intensities(
-            integral,
-            partition_level,
-            image_size,
-            image_size,
-            use_threads = False
-        )
-        return from_gpu(features)
-
-    # Высота и ширина всего изображения
+    p = cp if _is_cupy_array(integral) else np
     x_size, y_size = image_size
-
-    # Выделяем память для вектора, характеризующего изображение
-    features = p.empty(sum(level**2 for level in range(1, partition_level+1)), dtype=num_dtype)
+    features = p.empty(
+        sum(level**2 for level in range(1, partition_level + 1)),
+        dtype=num_dtype
+    )
     features_idx = 0
 
-    if use_threads:
-        with ThreadPoolExecutor() as executor:
-            futures = []
-            for current_partition_level in range(1, partition_level + 1):
-                # Высота и ширина текущего разбиения
-                part_size = (x_size / current_partition_level, y_size / current_partition_level)
-                # Подготовка параметров уровня
-                args = (integral, current_partition_level, image_size, part_size, use_threads)
-                futures.append(executor.submit(_process_level_intensities, args))
-            for future in futures:
-                part_features = future.result()
-                features[features_idx:features_idx+part_features.size] = part_features
-                features_idx += part_features.size
-    else:
-        for current_partition_level in range(1, partition_level + 1):
-            # Высота и ширина текущего разбиения
-            part_size = (x_size / current_partition_level, y_size / current_partition_level)
-
-            # Расчёт компонент итогового вектора
-            part_features = _level_intensities(
-                integral,
-                current_partition_level,
-                image_size,
-                part_size,
-                use_threads
-            )
-            features[features_idx:features_idx+part_features.size] = part_features
-            features_idx += part_features.size
+    for current_partition_level in range(1, partition_level + 1):
+        part_size = (
+            x_size / current_partition_level,
+            y_size / current_partition_level
+        )
+        part_features = _level_intensities(
+            integral,
+            current_partition_level,
+            image_size,
+            part_size
+        )
+        features[features_idx:features_idx + part_features.size] = part_features
+        features_idx += part_features.size
 
     return from_gpu(features)
-
-@overload
-def _process_level_intensities(
-    args: tuple[
-        npIntegralImageArray,
-        int,
-        tuple[int, int],
-        tuple[float, float] | None,
-        bool
-    ]
-) -> npImageArray: ...
-@overload
-def _process_level_intensities(
-    args: tuple[
-        cpIntegralImageArray,
-        int,
-        tuple[int, int],
-        tuple[float, float] | None,
-        bool
-    ]
-) -> cpImageArray: ...
-def _process_level_intensities(
-    args: tuple[
-        npIntegralImageArray | cpIntegralImageArray,
-        int,
-        tuple[int, int],
-        tuple[float, float] | None,
-        bool
-    ]
-) -> npImageArray | cpImageArray:
-    '''Получение компонент вектора для текущего уровня разбиения через интегральное изображение
-    Обёртка для _level_intensities()
-    '''
-    return _level_intensities(*args)
 
 @overload
 def _level_intensities(
@@ -1256,6 +1196,30 @@ def _level_intensities(
     part_size: tuple[float, float] | None = None,
     use_threads: bool = True
 ) -> cpImageArray: ...
+def _grid_points(
+    x_size: int,
+    y_size: int,
+    side_partitions_num: int,
+    part_size: tuple[float, float] | None = None
+) -> tuple[npt.NDArray[np.int_], npt.NDArray[np.int_]]:
+    '''Возвращает целые границы сетки по осям x и y.
+
+    Последняя граница всегда равна размеру изображения, поэтому сетка
+    покрывает изображение целиком даже при неделящемся размере.
+    '''
+    if part_size is None:
+        x_step = x_size / side_partitions_num
+        y_step = y_size / side_partitions_num
+    else:
+        x_step, y_step = part_size
+
+    x_points = np.floor(np.arange(side_partitions_num + 1) * x_step).astype(int)
+    y_points = np.floor(np.arange(side_partitions_num + 1) * y_step).astype(int)
+    x_points[-1] = x_size
+    y_points[-1] = y_size
+    return x_points, y_points
+
+
 def _level_intensities(
     integral: npIntegralImageArray | cpIntegralImageArray,
     current_partition_level: int,
@@ -1264,94 +1228,31 @@ def _level_intensities(
     use_threads: bool = True
 ) -> npImageArray | cpImageArray:
     '''Получение компонент вектора для текущего уровня разбиения через интегральное изображение
+
+    Все регионы уровня считаются одной векторной операцией. Параметр
+    use_threads оставлен для совместимости: отдельные потоки на регионы
+    больше не нужны.
     '''
-    if CUPY_AVAILABLE and isinstance(integral, cp.ndarray):
-        p = cp
-    else:
-        p = np
-    # Высота и ширина всего изображения
+    p = cp if _is_cupy_array(integral) else np
     x_size, y_size = image_size
+    x_points, y_points = _grid_points(
+        x_size, y_size, current_partition_level, part_size
+    )
 
-    # Не разбиваем на потоки единственную операцию
-    if current_partition_level == 1:
-        feature = p.divide(integral[-1, -1], x_size*y_size)
-        return p.asarray(feature, dtype=num_dtype).reshape(1)
+    x_starts, x_ends = x_points[:-1], x_points[1:]
+    y_starts, y_ends = y_points[:-1], y_points[1:]
 
-    # Высота и ширина текущего разбиения
-    if part_size is None:
-        x_step = y_step = None
-    else:
-        x_step, y_step = part_size
-
-    # Выделяем память для компонент вектора,
-    # характеризующего изображение на текущем уровне разбиения
-    features = p.empty(current_partition_level**2, dtype=num_dtype)
-    features_idx = 0
-
-    if use_threads:
-        with ThreadPoolExecutor() as executor:
-            futures = []
-
-            for (y0, y1), (x0, x1) in generate_grid_coords(
-                x_size,
-                y_size,
-                current_partition_level,
-                x_step = x_step,
-                y_step = y_step
-            ):
-                args = (integral, ((x0, x1), (y0, y1)))
-                futures.append(executor.submit(_process_level_part_intensities, args))
-
-            for future in futures:
-                single_feature = future.result()
-                features[features_idx] = single_feature
-                features_idx += 1
-    else:
-        for (y0, y1), (x0, x1) in generate_grid_coords(
-            x_size,
-            y_size,
-            current_partition_level,
-            x_step = x_step,
-            y_step = y_step
-        ):
-            # Расчёт компоненты итогового вектора
-            features[features_idx] = _level_part_intensities(integral, ((x0, x1), (y0, y1)))
-            features_idx += 1
-
-    return features
-
-def _process_level_part_intensities(
-    args: tuple[
-        npIntegralImageArray | cpIntegralImageArray,
-        tuple[tuple[int, int], tuple[int, int]]
-    ]
-) -> float:
-    '''Получение компоненты вектора для области через интегральное изображение
-    Обёртка для _level_part_intensities()
-    '''
-    return _level_part_intensities(*args)
-
-def _level_part_intensities(
-    integral: npIntegralImageArray | cpIntegralImageArray,
-    coordinates: tuple[tuple[int, int], tuple[int, int]]
-) -> float:
-    '''Получение компоненты вектора для области через интегральное изображение
-    '''
-    (x0, x1), (y0, y1) = coordinates
-    # Площадь части
-    area = (y1 - y0) * (x1 - x0)
-
-    # Расчёт компоненты итогового вектора
-    if area == 0:
-        return 0.0
-    # Быстрый расчёт суммы через интегральное изображение
-    # и получение средней интенсивности в области
-    sum_val = _get_area_integral_sum(integral, ((x0, x1), (y0, y1)))
-    if CUPY_AVAILABLE and isinstance(integral, cp.ndarray):
-        feature = cp.divide(sum_val, area)
-    else:
-        feature = np.divide(sum_val, area)
-    return float(feature)
+    sums = (
+        integral[p.ix_(y_ends, x_ends)]
+        - integral[p.ix_(y_starts, x_ends)]
+        - integral[p.ix_(y_ends, x_starts)]
+        + integral[p.ix_(y_starts, x_starts)]
+    )
+    areas = (y_ends - y_starts)[:, None] * (x_ends - x_starts)[None, :]
+    areas_gpu = p.asarray(areas)
+    safe_areas = p.where(areas_gpu > 0, areas_gpu, 1)
+    features = p.where(areas_gpu > 0, sums / safe_areas, 0)
+    return p.asarray(features, dtype=num_dtype).reshape(-1)
 
 def _calculate_features_sq(
     integral: npIntegralImageArray | cpIntegralImageArray,
@@ -1361,98 +1262,34 @@ def _calculate_features_sq(
     use_threads: bool = True
 ) -> Vector:
     '''Вычисление вектора, характеризующего изображение
+
+    Уровни обходятся последовательно: после векторизации каждый уровень
+    считается одной операцией, и пул потоков только добавляет накладные расходы.
     '''
-    if CUPY_AVAILABLE and isinstance(integral, cp.ndarray):
-        p = cp
-    else:
-        p = np
-    # Не разбиваем на потоки единственную операцию
-    if partition_level == 1:
-        features = _level_intensities_sq(
-            integral,
-            integral_sq,
-            partition_level,
-            image_size,
-            image_size,
-            use_threads = False
-        )
-        return from_gpu(features)
-
-    # Высота и ширина всего изображения
+    p = cp if _is_cupy_array(integral) else np
     x_size, y_size = image_size
-
-    # Выделяем память для вектора, характеризующего изображение
-    features = p.empty(sum(level**2 for level in range(1, partition_level+1)), dtype=num_dtype)
+    features = p.empty(
+        sum(level**2 for level in range(1, partition_level + 1)),
+        dtype=num_dtype
+    )
     features_idx = 0
 
-    if use_threads:
-        with ThreadPoolExecutor() as executor:
-            futures = []
-            for current_partition_level in range(1, partition_level + 1):
-                # Высота и ширина текущего разбиения
-                part_size = (x_size / current_partition_level, y_size / current_partition_level)
-                # Подготовка параметров уровня
-                args = (integral, integral_sq, current_partition_level, image_size, part_size, use_threads)
-                futures.append(executor.submit(_process_level_intensities_sq, args))
-            for future in futures:
-                part_features = future.result()
-                features[features_idx:features_idx+part_features.size] = part_features
-                features_idx += part_features.size
-    else:
-        for current_partition_level in range(1, partition_level + 1):
-            # Высота и ширина текущего разбиения
-            part_size = (x_size / current_partition_level, y_size / current_partition_level)
-
-            # Расчёт компонент итогового вектора
-            part_features = _level_intensities_sq(
-                integral,
-                integral_sq,
-                current_partition_level,
-                image_size,
-                part_size,
-                use_threads
-            )
-            features[features_idx:features_idx+part_features.size] = part_features
-            features_idx += part_features.size
+    for current_partition_level in range(1, partition_level + 1):
+        part_size = (
+            x_size / current_partition_level,
+            y_size / current_partition_level
+        )
+        part_features = _level_intensities_sq(
+            integral,
+            integral_sq,
+            current_partition_level,
+            image_size,
+            part_size
+        )
+        features[features_idx:features_idx + part_features.size] = part_features
+        features_idx += part_features.size
 
     return from_gpu(features)
-
-@overload
-def _process_level_intensities_sq(
-    args: tuple[
-        npIntegralImageArray,
-        npIntegralImageArray,
-        int,
-        tuple[int, int],
-        tuple[float, float] | None,
-        bool
-    ]
-) -> npImageArray: ...
-@overload
-def _process_level_intensities_sq(
-    args: tuple[
-        cpIntegralImageArray,
-        cpIntegralImageArray,
-        int,
-        tuple[int, int],
-        tuple[float, float] | None,
-        bool
-    ]
-) -> cpImageArray: ...
-def _process_level_intensities_sq(
-    args: tuple[
-        npIntegralImageArray | cpIntegralImageArray,
-        npIntegralImageArray | cpIntegralImageArray,
-        int,
-        tuple[int, int],
-        tuple[float, float] | None,
-        bool
-    ]
-) -> npImageArray | cpImageArray:
-    '''Получение компонент вектора для текущего уровня разбиения через интегральное изображение
-    Обёртка для _level_intensities_sq()
-    '''
-    return _level_intensities_sq(*args)
 
 @overload
 def _level_intensities_sq(
@@ -1481,115 +1318,41 @@ def _level_intensities_sq(
     use_threads: bool = True
 ) -> npImageArray | cpImageArray:
     '''Получение компонент вектора для текущего уровня разбиения через интегральное изображение
+
+    Все регионы уровня считаются одной векторной операцией. Параметр
+    use_threads оставлен для совместимости: отдельные потоки на регионы
+    больше не нужны.
     '''
-    if CUPY_AVAILABLE and isinstance(integral, cp.ndarray):
-        p = cp
-    else:
-        p = np
-    # Высота и ширина всего изображения
+    p = cp if _is_cupy_array(integral) else np
     x_size, y_size = image_size
+    x_points, y_points = _grid_points(
+        x_size, y_size, current_partition_level, part_size
+    )
 
-    # Не разбиваем на потоки единственную операцию
-    if current_partition_level == 1:
-        area = x_size*y_size
-        mean = integral[-1, -1] / area
-        variance = integral_sq[-1, -1] / area - mean**2
-        # Из-за погрешности вычислений дисперсия может оказаться
-        # чуть меньше нуля; sqrt от неё дал бы NaN.
-        feature = p.sqrt(p.maximum(variance, 0))
-        return p.asarray(feature, dtype=num_dtype).reshape(1)
+    x_starts, x_ends = x_points[:-1], x_points[1:]
+    y_starts, y_ends = y_points[:-1], y_points[1:]
 
-    # Высота и ширина текущего разбиения
-    if part_size is None:
-        x_step = y_step = None
-    else:
-        x_step, y_step = part_size
+    def area_sums(source):
+        return (
+            source[p.ix_(y_ends, x_ends)]
+            - source[p.ix_(y_starts, x_ends)]
+            - source[p.ix_(y_ends, x_starts)]
+            + source[p.ix_(y_starts, x_starts)]
+        )
 
-    # Выделяем память для компонент вектора,
-    # характеризующего изображение на текущем уровне разбиения
-    features = p.empty(current_partition_level**2, dtype=num_dtype)
-    features_idx = 0
-
-    if use_threads:
-        with ThreadPoolExecutor() as executor:
-            futures = []
-
-            for (y0, y1), (x0, x1) in generate_grid_coords(
-                x_size,
-                y_size,
-                current_partition_level,
-                x_step = x_step,
-                y_step = y_step
-            ):
-                args = (integral, integral_sq, ((x0, x1), (y0, y1)))
-                futures.append(executor.submit(_process_level_part_intensities_sq, args))
-
-            for future in futures:
-                single_feature = future.result()
-                features[features_idx] = single_feature
-                features_idx += 1
-    else:
-        for (y0, y1), (x0, x1) in generate_grid_coords(
-            x_size,
-            y_size,
-            current_partition_level,
-            x_step = x_step,
-            y_step = y_step
-        ):
-            # Расчёт компоненты итогового вектора
-            features[features_idx] = _level_part_intensities_sq(integral, integral_sq, ((x0, x1), (y0, y1)))
-            features_idx += 1
-
-    return features
-
-def _process_level_part_intensities_sq(
-    args: tuple[
-        npIntegralImageArray | cpIntegralImageArray,
-        npIntegralImageArray | cpIntegralImageArray,
-        tuple[tuple[int, int], tuple[int, int]]
-    ]
-) -> float:
-    '''Получение компоненты вектора для области через интегральное изображение
-    Обёртка для _level_part_intensities_sq()
-    '''
-    return _level_part_intensities_sq(*args)
-
-def _level_part_intensities_sq(
-    integral: npIntegralImageArray | cpIntegralImageArray,
-    integral_sq: npIntegralImageArray | cpIntegralImageArray,
-    coordinates: tuple[tuple[int, int], tuple[int, int]]
-) -> float:
-    '''Получение компоненты вектора для области через интегральное изображение
-    '''
-    (x0, x1), (y0, y1) = coordinates
-    # Площадь части
-    area = (y1 - y0) * (x1 - x0)
-
-    # Расчёт компоненты итогового вектора
-    if area == 0:
-        return 0.0
-    # Быстрый расчёт суммы через интегральное изображение
-    # и получение средней интенсивности в области
-    sum_val = _get_area_integral_sum(integral, coordinates)
-    sum_sq = _get_area_integral_sum(integral_sq, coordinates)
-    if CUPY_AVAILABLE and isinstance(integral, cp.ndarray):
-        mean = sum_val / area
-        variance = sum_sq / area - mean**2
-        feature = cp.sqrt(cp.maximum(variance, 0))
-    else:
-        mean = sum_val / area
-        variance = sum_sq / area - mean**2
-        feature = np.sqrt(np.maximum(variance, 0))
-    return float(feature)
-
-def _get_area_integral_sum(
-    integral: npIntegralImageArray | cpIntegralImageArray,
-    coord: tuple[tuple[int, int], tuple[int, int]]
-) -> num_integral_dtype:
-    '''Получение суммы пикселей области изображения через интегральную сумму
-    '''
-    (x0, x1), (y0, y1) = coord
-    return integral[y1, x1] - integral[y1, x0] - integral[y0, x1] + integral[y0, x0]
+    sums = area_sums(integral)
+    sums_sq = area_sums(integral_sq)
+    areas = (y_ends - y_starts)[:, None] * (x_ends - x_starts)[None, :]
+    areas_gpu = p.asarray(areas)
+    safe_areas = p.where(areas_gpu > 0, areas_gpu, 1)
+    mean = sums / safe_areas
+    variance = sums_sq / safe_areas - mean**2
+    features = p.where(
+        areas_gpu > 0,
+        p.sqrt(p.maximum(variance, 0)),
+        0
+    )
+    return p.asarray(features, dtype=num_dtype).reshape(-1)
 
 def generate_grid_coords(
     x_size: int,
