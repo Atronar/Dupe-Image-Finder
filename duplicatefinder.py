@@ -77,8 +77,16 @@ def to_gpu(arr: npImageArray) -> npImageArray | cpImageArray:
         return cp.asarray(arr, dtype=num_dtype)
     return arr
 
+def _is_cupy_array(arr: object) -> bool:
+    """Проверяет, что массив является массивом CuPy.
+
+    Проверка безопасна и при отсутствии CuPy: имя cp в этом случае
+    не вычисляется благодаря короткому замыканию.
+    """
+    return CUPY_AVAILABLE and isinstance(arr, cp.ndarray)  # type: ignore[name-defined]
+
 def from_gpu(arr: npImageArray | cpImageArray) -> npImageArray:
-    return cp.asnumpy(arr) if CUPY_AVAILABLE and isinstance(arr, cp.ndarray) else arr
+    return cp.asnumpy(arr) if _is_cupy_array(arr) else arr
 
 def open_image(image_path: str|Path|BinaryIO) -> npImageArray:
     """Функция, открывающая изображение по его пути, возвращается матрица пикселей в BGR
@@ -848,7 +856,7 @@ def intensities(
 
     if use_gpu:
         image_gpu = to_gpu(image)
-        if not isinstance(image_gpu, cp.ndarray):
+        if not _is_cupy_array(image_gpu):
             use_gpu = False
     else:
         image_gpu = image
