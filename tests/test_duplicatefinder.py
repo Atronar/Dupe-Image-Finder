@@ -199,6 +199,48 @@ def test_intensities_iter_preserves_parameter_names(df, color_png: Path, gray_pn
             np.testing.assert_array_equal(actual_vector, expected_vector)
 
 
+def test_image_decoders_agree_on_bgr(df, color_png: Path) -> None:
+    """Все доступные декодеры должны возвращать одинаковый BGR-массив."""
+    openers = []
+    if df.CV2_AVAILABLE:
+        openers.append(df.open_image_cv)
+    if df.PIL_AVAILABLE:
+        openers.append(df.open_image_pil)
+    if df.VIPS_AVAILABLE:
+        openers.append(df.open_image_vips)
+    if len(openers) < 2:
+        pytest.skip("нужно хотя бы два декодера")
+
+    arrays = [opener(str(color_png)) for opener in openers]
+    for array in arrays[1:]:
+        assert array.shape == arrays[0].shape
+        np.testing.assert_allclose(array, arrays[0], atol=1)
+    # color_png записан OpenCV в BGR: B=10, G=20, R=30.
+    np.testing.assert_allclose(arrays[0][0, 0], [10, 20, 30], atol=1)
+
+
+def test_gpu_intensities_matches_cpu(df, large_color_png: Path) -> None:
+    """GPU-путь должен давать те же характеристики, что и CPU."""
+    if not df._is_gpu_available():
+        pytest.skip("CUDA недоступна")
+
+    cpu = df.intensities(
+        str(large_color_png),
+        partition_level=2,
+        use_threads=False,
+        use_gpu=False,
+    )
+    gpu = df.intensities(
+        str(large_color_png),
+        partition_level=2,
+        use_threads=False,
+        use_gpu=True,
+    )
+    assert len(cpu) == len(gpu)
+    for cpu_vector, gpu_vector in zip(cpu, gpu):
+        np.testing.assert_allclose(gpu_vector, cpu_vector, rtol=1e-3, atol=1e-3)
+
+
 def test_open_image_accepts_bytesio(df, color_png: Path) -> None:
     reference = df.open_image(str(color_png))
     actual = df.open_image(io.BytesIO(color_png.read_bytes()))
