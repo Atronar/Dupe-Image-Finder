@@ -68,8 +68,13 @@ def gray_png(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def large_color_png(tmp_path: Path) -> Path:
-    # Больше порога 512x512, чтобы библиотека не отключала GPU автоматически.
     return _write_color_png(tmp_path / "large.png", size=(600, 600))
+
+
+@pytest.fixture
+def gpu_color_png(tmp_path: Path) -> Path:
+    # Больше порога 2 Мпикс, чтобы GPU действительно включился.
+    return _write_color_png(tmp_path / "gpu.png", size=(1536, 1536))
 
 
 def _vectors(result) -> list[np.ndarray]:
@@ -242,19 +247,19 @@ def test_image_decoders_agree_on_bgr(df, color_png: Path) -> None:
     np.testing.assert_allclose(arrays[0][0, 0], [10, 20, 30], atol=1)
 
 
-def test_gpu_intensities_matches_cpu(df, large_color_png: Path) -> None:
+def test_gpu_intensities_matches_cpu(df, gpu_color_png: Path) -> None:
     """GPU-путь должен давать те же характеристики, что и CPU."""
     if not df._is_gpu_available():
         pytest.skip("CUDA недоступна")
 
     cpu = df.intensities(
-        str(large_color_png),
+        str(gpu_color_png),
         partition_level=2,
         use_threads=False,
         use_gpu=False,
     )
     gpu = df.intensities(
-        str(large_color_png),
+        str(gpu_color_png),
         partition_level=2,
         use_threads=False,
         use_gpu=True,

@@ -1141,12 +1141,11 @@ def intensities(
     '''
     image = open_image(image_path)
 
-    if (
-        # Для цветных менее (условно) 512x512 и серых менее (условно) 1536x1536
-        # использование GPU может быть медленнее, чем CPU
-        image.ndim < 3 and image.shape[0]*image.shape[1]<2359296
-        or image.shape[0]*image.shape[1]<262144
-    ):
+    # Порог получен замерами: на цветных изображениях передача на GPU
+    # окупается примерно с 2 Мпикс, на серых — с 4 Мпикс.
+    pixels = image.shape[0] * image.shape[1]
+    min_gpu_pixels = 4_000_000 if image.ndim < 3 else 2_000_000
+    if use_gpu and pixels < min_gpu_pixels:
         use_gpu = False
 
     if use_gpu and _is_gpu_available():
