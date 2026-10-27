@@ -113,6 +113,29 @@ def test_runtime_without_cupy(large_color_png: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
+@pytest.mark.parametrize("blocked", [("cv2",), ("cv2", "pyvips")])
+def test_core_operations_without_opencv(
+    df,
+    large_color_png: Path,
+    blocked: tuple[str, ...],
+) -> None:
+    """Без OpenCV загрузка и базовые операции идут через pyvips/Pillow/NumPy."""
+    if not (df.VIPS_AVAILABLE or df.PIL_AVAILABLE):
+        pytest.skip("нет ни pyvips, ни Pillow")
+    if "pyvips" in blocked:
+        pytest.importorskip("PIL")
+
+    body = (
+        "from duplicatefinder import open_image, _gauss_blur, _integral_image\n"
+        f"image = open_image({str(large_color_png)!r})\n"
+        "blurred = _gauss_blur(image, (3, 3))\n"
+        "integral, integral_sq = _integral_image(blurred, sq=True)\n"
+        "print(integral.shape, integral_sq.shape)\n"
+    )
+    result = _run_without_modules(blocked, body)
+    assert result.returncode == 0, result.stderr
+
+
 def test_gpu_probe_handles_unavailable_cuda(df, monkeypatch) -> None:
     """Импортируемый CuPy без рабочей CUDA не должен приводить к падению."""
     if not df.CUPY_AVAILABLE:
