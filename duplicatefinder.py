@@ -87,7 +87,14 @@ def _is_gpu_available() -> bool:
         return False
     if _gpu_available is None:
         try:
-            _gpu_available = cp.cuda.runtime.getDeviceCount() > 0
+            if cp.cuda.runtime.getDeviceCount() <= 0:
+                _gpu_available = False
+            else:
+                # Одного наличия устройства недостаточно: для JIT-компиляции
+                # ядер CuPy нужны заголовки CUDA. Пробный запуск выявляет
+                # такую установку до начала обработки изображения.
+                cp.arange(1, dtype=cp.float32).sum()
+                _gpu_available = True
         except Exception:
             _gpu_available = False
     return _gpu_available

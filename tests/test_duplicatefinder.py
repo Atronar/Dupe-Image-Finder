@@ -130,6 +130,22 @@ def test_gpu_probe_handles_unavailable_cuda(df, monkeypatch) -> None:
     assert df.to_gpu(array) is array
 
 
+def test_gpu_probe_handles_missing_cuda_headers(df, monkeypatch) -> None:
+    """Устройство может быть доступно, но JIT-компиляция ядер — нет."""
+    if not df.CUPY_AVAILABLE:
+        pytest.skip("CuPy не установлен")
+
+    monkeypatch.setattr(df, "_gpu_available", None)
+    monkeypatch.setattr(df.cp.cuda.runtime, "getDeviceCount", lambda: 1)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("не найдены заголовки CUDA")
+
+    monkeypatch.setattr(df.cp, "arange", fail)
+
+    assert df._is_gpu_available() is False
+
+
 def test_intensities_falls_back_to_cpu_without_cuda(df, color_png: Path, monkeypatch) -> None:
     """При недоступной CUDA обработка продолжается на CPU."""
     monkeypatch.setattr(df, "_gpu_available", False)
