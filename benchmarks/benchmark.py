@@ -87,19 +87,20 @@ def main() -> None:
                 measure(lambda: df._gauss_blur_custom(gray, (3, 3)), repeat=3),
             ))
 
-        for threads in (False, True):
-            results.append((
-                f"intensities level=4 threads={threads}",
-                measure(
-                    lambda threads=threads: df.intensities(
-                        str(image_path),
-                        partition_level=4,
-                        use_threads=threads,
-                        use_gpu=False,
+        for level in (2, 4, 8, 12):
+            for threads in (False, True):
+                results.append((
+                    f"intensities level={level} threads={threads}",
+                    measure(
+                        lambda level=level, threads=threads: df.intensities(
+                            str(image_path),
+                            partition_level=level,
+                            use_threads=threads,
+                            use_gpu=False,
+                        ),
+                        repeat=3,
                     ),
-                    repeat=3,
-                ),
-            ))
+                ))
 
         results.append((
             "similarity x10000",
