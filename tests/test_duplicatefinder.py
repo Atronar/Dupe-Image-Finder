@@ -288,3 +288,64 @@ def test_identical_vectors_are_similar(df, color_png: Path) -> None:
     for vector in vectors:
         assert df.similarity(vector, vector) == pytest.approx(0.0, abs=1e-6)
         assert df.is_similar(vector, vector) is True
+
+
+def test_integral_image_custom_uses_float64(df) -> None:
+    """Собственный интеграл вещественного изображения не должен терять точность."""
+    image = np.full((64, 64), 255, dtype=np.float32)
+
+    integral, integral_sq = df._integral_image_custom(image, sq=True)
+
+    assert integral.dtype == np.float64
+    assert integral_sq.dtype == np.float64
+
+
+def test_contrast_is_finite_for_large_uniform_image(
+    df, tmp_path: Path, monkeypatch
+) -> None:
+    """На большом однородном изображении дисперсия не должна уходить в минус."""
+    cv2 = pytest.importorskip("cv2")
+    path = tmp_path / "uniform-large.png"
+    image = np.full((2000, 2000), 255, dtype=np.uint8)
+    assert cv2.imwrite(str(path), image)
+
+    # Принудительно проверяем собственную реализацию интеграла.
+    monkeypatch.setattr(df, "CV2_AVAILABLE", False)
+    monkeypatch.setattr(df, "VIPS_AVAILABLE", False)
+
+    vectors = df.intensities(
+        str(path),
+        partition_level=1,
+        blur_ksize=(0, 0),
+        use_threads=False,
+        use_gpu=False,
+    )
+
+    for vector in vectors:
+        assert np.isfinite(vector).all()
+    assert vectors[1][0] == pytest.approx(0.0, abs=1e-4)
+
+
+def test_contrast_is_accurate_for_low_contrast_image(
+    df, tmp_path: Path, monkeypatch
+) -> None:
+    """Низкоконтрастное изображение должно давать корректное стандартное отклонение."""
+    cv2 = pytest.importorskip("cv2")
+    path = tmp_path / "low-contrast-large.png"
+    image = np.empty((2000, 2000), dtype=np.uint8)
+    image[:, :1000] = 199
+    image[:, 1000:] = 201
+    assert cv2.imwrite(str(path), image)
+
+    monkeypatch.setattr(df, "CV2_AVAILABLE", False)
+    monkeypatch.setattr(df, "VIPS_AVAILABLE", False)
+
+    vectors = df.intensities(
+        str(path),
+        partition_level=1,
+        blur_ksize=(0, 0),
+        use_threads=False,
+        use_gpu=False,
+    )
+
+    assert vectors[1][0] == pytest.approx(1.0, abs=1e-3)

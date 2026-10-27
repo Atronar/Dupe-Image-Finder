@@ -50,7 +50,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 num_dtype = np.float32
-num_integral_dtype = np.float32 | np.uint64 | np.int64
+num_integral_dtype = np.float32 | np.float64 | np.uint64 | np.int64
 Vector = npt.NDArray[num_dtype]
 npImageArray = npt.NDArray[num_dtype]
 npIntegralImageArray = npt.NDArray[num_integral_dtype]
@@ -787,10 +787,13 @@ def _integral_image_gpu(
             "cupy не установлен. "
             "Необходимо использовать функцию integral_image()"
         )
-    # Выбор типа данных
+    # Выбор типа данных.
+    # Для вещественных изображений используем float64: суммы квадратов
+    # на больших изображениях в float32 теряют точность, из-за чего
+    # дисперсия может стать отрицательной.
     kind = image.dtype.kind
     dtype = (
-        cp.float32 if kind == 'f'
+        cp.float64 if kind == 'f'
         else cp.uint64 if kind == 'u'
         else cp.int64
     )
@@ -836,10 +839,13 @@ def _integral_image_custom(
     Возвращается массив интегрального изображения с нулевой рамкой —
     кумулятивная сумма по каждому измерению
     """
-    # Выбор типа данных
+    # Выбор типа данных.
+    # Для вещественных изображений используем float64: суммы квадратов
+    # на больших изображениях в float32 теряют точность, из-за чего
+    # дисперсия может стать отрицательной.
     kind = image.dtype.kind
     dtype = (
-        np.float32 if kind == 'f'
+        np.float64 if kind == 'f'
         else np.uint64 if kind == 'u'
         else np.int64
     )
@@ -1476,7 +1482,11 @@ def _level_intensities_sq(
     # Не разбиваем на потоки единственную операцию
     if current_partition_level == 1:
         area = x_size*y_size
-        feature = p.sqrt((integral_sq[-1, -1] - integral[-1, -1]**2 / area) / area)
+        mean = integral[-1, -1] / area
+        variance = integral_sq[-1, -1] / area - mean**2
+        # Из-за погрешности вычислений дисперсия может оказаться
+        # чуть меньше нуля; sqrt от неё дал бы NaN.
+        feature = p.sqrt(p.maximum(variance, 0))
         return p.asarray(feature, dtype=num_dtype).reshape(1)
 
     # Высота и ширина текущего разбиения
@@ -1553,9 +1563,13 @@ def _level_part_intensities_sq(
     sum_val = _get_area_integral_sum(integral, coordinates)
     sum_sq = _get_area_integral_sum(integral_sq, coordinates)
     if CUPY_AVAILABLE and isinstance(integral, cp.ndarray):
-        feature = cp.sqrt((sum_sq - sum_val**2 / area) / area)
+        mean = sum_val / area
+        variance = sum_sq / area - mean**2
+        feature = cp.sqrt(cp.maximum(variance, 0))
     else:
-        feature = np.sqrt((sum_sq - sum_val**2 / area) / area)
+        mean = sum_val / area
+        variance = sum_sq / area - mean**2
+        feature = np.sqrt(np.maximum(variance, 0))
     return float(feature)
 
 def _get_area_integral_sum(
