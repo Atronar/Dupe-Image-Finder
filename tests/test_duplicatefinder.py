@@ -396,3 +396,29 @@ def test_gauss_blur_custom_matches_opencv_for_non_square_kernel(df) -> None:
     expected = cv2.GaussianBlur(image, (5, 3), 1.2)
 
     np.testing.assert_allclose(actual, expected, atol=1e-4)
+
+
+def test_similarity_rejects_different_shapes(df) -> None:
+    with pytest.raises(ValueError):
+        df.similarity(np.zeros(3, dtype=np.float32), np.zeros(4, dtype=np.float32))
+
+
+def test_similarity_rejects_non_finite_values(df) -> None:
+    vector = np.array([0.0, 1.0, np.nan], dtype=np.float32)
+
+    with pytest.raises(ValueError):
+        df.similarity(vector, vector)
+
+
+def test_similarity_rejects_empty_vectors(df) -> None:
+    empty = np.array([], dtype=np.float32)
+
+    with pytest.raises(ValueError):
+        df.similarity(empty, empty)
+
+
+def test_similarity_rejects_negative_threshold(df) -> None:
+    vector = np.ones(3, dtype=np.float32)
+
+    with pytest.raises(ValueError):
+        df.is_similar(vector, vector, threshold=-0.1)

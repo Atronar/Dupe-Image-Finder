@@ -1703,18 +1703,23 @@ def intensities_iter(
 def similarity(vector1: Vector|tuple|list, vector2: Vector|tuple|list) -> float:
     '''Уровень похожести между векторами.
     0 - идентичные, 1 - максимально разные
+
+    Векторы должны быть одномерными, непустыми и конечными.
     '''
     # Преобразование необходимо для вычисления разницы векторов
-    vector1 = (
-        np.asarray(vector1, dtype=num_dtype)
-        if not isinstance(vector1, np.ndarray) else
-        vector1
-    )
-    vector2 = (
-        np.asarray(vector2, dtype=num_dtype)
-        if not isinstance(vector2, np.ndarray) else
-        vector2
-    )
+    vector1 = np.asarray(vector1, dtype=num_dtype)
+    vector2 = np.asarray(vector2, dtype=num_dtype)
+
+    if vector1.ndim != 1 or vector2.ndim != 1:
+        raise ValueError("Векторы должны быть одномерными")
+    if vector1.shape != vector2.shape:
+        raise ValueError(
+            f"Размеры векторов не совпадают: {vector1.shape} != {vector2.shape}"
+        )
+    if vector1.size == 0:
+        raise ValueError("Векторы не должны быть пустыми")
+    if not np.isfinite(vector1).all() or not np.isfinite(vector2).all():
+        raise ValueError("Векторы содержат NaN или бесконечные значения")
 
     if np.array_equal(vector1, vector2):
         return 0.0
@@ -1735,6 +1740,8 @@ def is_similar(vector1: Vector, vector2: Vector, threshold: float=0.1) -> bool:
     threshold: уровень разницы, больше которого вектора считаются разными
     Возвращается bool
     '''
+    if not np.isfinite(threshold) or threshold < 0:
+        raise ValueError("Порог должен быть конечным неотрицательным числом")
     return similarity(vector1,vector2) < threshold
 
 def similarity_images(
@@ -1766,4 +1773,6 @@ def is_similar_images(
     threshold: уровень разницы, больше которого изображения считаются разными
     Возвращается bool
     '''
+    if not np.isfinite(threshold) or threshold < 0:
+        raise ValueError("Порог должен быть конечным неотрицательным числом")
     return all(similarity_level < threshold for similarity_level in similarity_images(image1, image2, **kwargs))
