@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
 from typing import Any, BinaryIO, Generator, Iterable, Literal, TYPE_CHECKING, overload
-from io import BufferedIOBase
+from io import IOBase, TextIOBase
 import numpy as np
 import numpy.typing as npt
 
@@ -89,6 +89,14 @@ def _is_cupy_array(arr: object) -> bool:
 def from_gpu(arr: npImageArray | cpImageArray) -> npImageArray:
     return cp.asnumpy(arr) if _is_cupy_array(arr) else arr
 
+def _is_binary_file_like(obj: object) -> bool:
+    """Проверяет, что объект является бинарным файловым объектом.
+
+    typing.BinaryIO нельзя использовать в isinstance: это только
+    аннотация. IOBase покрывает BytesIO, BufferedIOBase и RawIOBase.
+    """
+    return isinstance(obj, IOBase) and not isinstance(obj, TextIOBase)
+
 def open_image(image_path: str|Path|BinaryIO) -> npImageArray:
     """Функция, открывающая изображение по его пути, возвращается матрица пикселей в BGR
     image_path: путь к изображению
@@ -133,7 +141,7 @@ def open_image_vips(
             "Необходимо использовать функцию open_image()"
         )
 
-    if isinstance(image_path, BinaryIO):
+    if _is_binary_file_like(image_path):
         # Создать источник из буфера
         pos = image_path.tell()
         try:
@@ -191,8 +199,8 @@ def open_image_cv(image_path: str|Path|BinaryIO) -> npImageArray:
             "Необходимо использовать функцию open_image()"
         )
 
-    def load_image(image_path: str|Path|BinaryIO|BufferedIOBase, flags: int) -> MatLike:
-        if isinstance(image_path, (BinaryIO, BufferedIOBase)):
+    def load_image(image_path: str|Path|BinaryIO, flags: int) -> MatLike:
+        if _is_binary_file_like(image_path):
             pos = image_path.tell()
             try:
                 image_data = image_path.read()
