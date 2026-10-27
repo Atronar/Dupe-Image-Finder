@@ -11,23 +11,19 @@ Dupe Image Finder
 
 * Python >= 3.10;
 * NumPy;
-* OpenCV устанавливается как базовая зависимость;
-* Pillow, pyvips и CuPy — необязательные ускорения и альтернативные декодеры.
+* OpenCV, Pillow, pyvips и CuPy — необязательные декодеры и ускорения.
+  Для чтения изображений нужен хотя бы один декодер.
 
 Установка
 ---------
 
 ```bash
 pip install .
-```
-
-Дополнительные возможности:
-
-```bash
+pip install ".[opencv]"   # быстрый CPU-декодер
 pip install ".[pillow]"   # альтернативный декодер
 pip install ".[vips]"     # libvips
 pip install ".[gpu]"      # CuPy для NVIDIA GPU
-pip install ".[dev]"      # pytest
+pip install ".[dev]"      # pytest и декодеры для тестов
 ```
 
 CuPy должен соответствовать установленной версии CUDA. Если CUDA

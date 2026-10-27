@@ -1,2 +1,5 @@
 -r requirements.txt
+# Для тестов нужны декодеры, даже если библиотека работает без них.
+opencv-python>=4.8
+pillow>=10
 pytest>=7.0
