@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "duplicatefinder"
+version = "0.1.0"
+description = "Сравнение изображений по интегральным характеристикам"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.23",
+    "opencv-python>=4.8",
+]
+
+[project.optional-dependencies]
+pillow = ["pillow>=10"]
+vips = ["pyvips-binary>=2.2"]
+gpu = ["cupy-cuda13x"]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools]
+py-modules = ["duplicatefinder"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
