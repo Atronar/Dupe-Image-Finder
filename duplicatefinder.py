@@ -1647,19 +1647,33 @@ def get_rectangles_iter(image: npImageArray, partition_level: int = 2):
         )
 
 def rect_sum(rect: npImageArray) -> float:
-    '''Координата вектора — средняя относительная яркость
-    '''
-    sums: npt.NDArray[np.number] | np.number
-    if rect.ndim > 2 and rect.shape[2]>2:
-        sums = np.sum(rect, axis=(0, 1))
-        if rect.shape[2]>3 and isinstance(sums, np.ndarray):
-            sums = sums[-3:] + sums[3]
-    else:
-        sums = np.sum(rect)
-    intensity = (sums / (rect.shape[0] * rect.shape[1])) * BGR_COEFFS
-    avg_intensity: np.floating = round(intensity.mean(), 6)
+    '''Средняя относительная яркость области.
 
-    return float(avg_intensity)
+    Для цветного изображения каналы BGR взвешиваются коэффициентами
+    BGR_COEFFS; для изображения с альфа-каналом альфа накладывается на белый
+    фон. Для серого изображения возвращается обычное среднее.
+    '''
+    if rect.size == 0:
+        return 0.0
+
+    if rect.ndim == 2:
+        return float(np.mean(rect, dtype=np.float64))
+
+    channels = rect.shape[2]
+    if channels == 1:
+        return float(np.mean(rect[..., 0], dtype=np.float64))
+
+    if channels < 3:
+        return float(np.mean(rect, dtype=np.float64))
+
+    # Для расчёта яркости используем первые три канала BGR.
+    color = rect[..., :3].astype(np.float64, copy=False)
+    if channels >= 4:
+        alpha = rect[..., 3:4].astype(np.float64, copy=False) / 255.0
+        color = color * alpha + 255.0 * (1.0 - alpha)
+
+    mean_bgr = color.mean(axis=(0, 1))
+    return float(np.dot(mean_bgr, BGR_COEFFS))
 
 def intensities_iter(
     image_list: Iterable[str | Path | BinaryIO],

@@ -349,3 +349,27 @@ def test_contrast_is_accurate_for_low_contrast_image(
     )
 
     assert vectors[1][0] == pytest.approx(1.0, abs=1e-3)
+
+
+def test_rect_sum_returns_luminance_for_bgr(df) -> None:
+    red = np.zeros((2, 2, 3), dtype=np.float32)
+    red[..., 2] = 255.0
+
+    assert df.rect_sum(red) == pytest.approx(54.23, abs=0.01)
+
+
+def test_rect_sum_returns_intensity_for_grayscale(df) -> None:
+    gray = np.full((2, 2), 255.0, dtype=np.float32)
+
+    assert df.rect_sum(gray) == pytest.approx(255.0)
+
+
+def test_rect_sum_composites_alpha_on_white(df) -> None:
+    transparent_red = np.zeros((2, 2, 4), dtype=np.float32)
+    transparent_red[..., 2] = 255.0
+    transparent_red[..., 3] = 0.0
+
+    assert df.rect_sum(transparent_red) == pytest.approx(255.0)
+
+    transparent_red[..., 3] = 255.0
+    assert df.rect_sum(transparent_red) == pytest.approx(54.23, abs=0.01)
