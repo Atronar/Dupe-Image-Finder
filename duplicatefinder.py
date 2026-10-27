@@ -53,11 +53,16 @@ Vector = npt.NDArray[num_dtype]
 npImageArray = npt.NDArray[num_dtype]
 npIntegralImageArray = npt.NDArray[num_integral_dtype]
 if TYPE_CHECKING:
-    class cpImageArray(cp.ndarray): ...
-    class cpIntegralImageArray(cp.ndarray): ...
-else:
+    # Для проверки типов достаточно унаследовать от ndarray:
+    # конкретный тип CuPy здесь не важен.
+    class cpImageArray(np.ndarray): ...
+    class cpIntegralImageArray(np.ndarray): ...
+elif CUPY_AVAILABLE:
     cpImageArray = cp.ndarray
     cpIntegralImageArray = cp.ndarray
+else:
+    cpImageArray = np.ndarray
+    cpIntegralImageArray = np.ndarray
 
 # Коэффициенты яркости Y преобразования sRGB -> xyY для компонент BGR (ITU-R BT.709)
 if CUPY_AVAILABLE:
