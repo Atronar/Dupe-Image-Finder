@@ -10,6 +10,7 @@ is_similar_images() и is_similar()
 которые вернут булево значение "похоже/не похоже" для двух изображений или векторов соответственно
 '''
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 from typing import Any, BinaryIO, Generator, Iterable, Literal, TYPE_CHECKING, overload
 from io import BufferedIOBase
@@ -1455,21 +1456,13 @@ def intensities_iter(
     '''Итератор, возвращающий вектора для набора полученных изображений
     '''
     if kwargs.get("use_threads", True):
+        # partial сохраняет имена параметров, а executor.map — порядок изображений.
+        process = partial(intensities, **kwargs)
         with ThreadPoolExecutor() as executor:
-            futures = []
-            for image in image_list:
-                # Подготовка параметров
-                args = (image, *(kwargs.values()))
-                futures.append(executor.submit(_intensities_process, args))
-
-            for future in futures:
-                yield future.result()
+            yield from executor.map(process, image_list)
     else:
         for image in image_list:
             yield intensities(image, **kwargs)
-
-def _intensities_process(args):
-    return intensities(*args)
 
 def similarity(vector1: Vector|tuple|list, vector2: Vector|tuple|list) -> float:
     '''Уровень похожести между векторами.
