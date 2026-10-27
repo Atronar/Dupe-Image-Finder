@@ -320,11 +320,10 @@ def open_image_vips(
             image_data = image_path.read()
         finally:
             image_path.seek(pos) # возвращаем указатель файла к исходной позиции
-        if file_format:
-            img = pyvips.Image.new_from_buffer(image_data, "", format=file_format)
-        else:
-            source = pyvips.Source.new_from_memory(image_data)
-            img = pyvips.Image.new_from_source(source, "")  # автоопределение формата
+        # Буферные загрузчики libvips не принимают format как опцию:
+        # формат определяется по содержимому буфера. Параметр file_format
+        # оставлен для совместимости и не влияет на буферный путь.
+        img = pyvips.Image.new_from_buffer(image_data, "", access="sequential")
         del image_data
     else:
         img = pyvips.Image.new_from_file(image_path, access="sequential")
