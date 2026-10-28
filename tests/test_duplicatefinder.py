@@ -187,6 +187,26 @@ def test_core_operations_without_opencv(
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize("blocked", [("cv2",), ("cv2", "pyvips")])
+def test_intensities_without_opencv(
+    df,
+    large_color_png: Path,
+    blocked: tuple[str, ...],
+) -> None:
+    """Цветовая характеристика должна считаться и без OpenCV."""
+    if "pyvips" in blocked:
+        pytest.importorskip("PIL")
+    body = (
+        "import duplicatefinder as library\n"
+        f"vectors = library.intensities({str(large_color_png)!r}, "
+        "partition_level=1, use_threads=False, use_gpu=False)\n"
+        "print(len(vectors), vectors[-1].shape)\n"
+    )
+    result = _run_without_modules(blocked, body)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "4 (3,)"
+
+
 def test_gpu_probe_handles_unavailable_cuda(df, monkeypatch) -> None:
     """Импортируемый CuPy без рабочей CUDA не должен приводить к падению."""
     if not df.CUPY_AVAILABLE:
