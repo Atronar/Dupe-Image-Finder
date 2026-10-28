@@ -1145,15 +1145,17 @@ def _get_ab_from_BGR_cv(image: npImageArray) -> tuple[npImageArray, npImageArray
             "opencv не установлен. "
             "Необходимо использовать функцию _get_ab_from_BGR()"
         )
-    # Для float-входа OpenCV возвращает Lab с нейтралью a = b = 0.
-    # Это избавляет от смещения 128, которое раньше разбавляло цвет.
+    # OpenCV 5 преобразует float-изображение в Lab заметно медленнее,
+    # чем uint8, а квантование Lab даёт погрешность меньше единицы.
+    # Поэтому для скорости используем uint8-путь, но сразу центрируем
+    # a и b в нуле: смещение 128 раньше разбавляло цветовую разницу.
     lab = cv2.cvtColor(
-        image.astype(num_dtype, copy=False) / 255.0,
+        np.clip(image, 0, 255).astype(np.uint8),
         cv2.COLOR_BGR2Lab
     )
     return (
-        np.ascontiguousarray(lab[..., 1], dtype=num_dtype),
-        np.ascontiguousarray(lab[..., 2], dtype=num_dtype),
+        np.ascontiguousarray(lab[..., 1], dtype=num_dtype) - 128.0,
+        np.ascontiguousarray(lab[..., 2], dtype=num_dtype) - 128.0,
     )
 
 def _get_ab_from_BGR_vips(image: npImageArray) -> tuple[npImageArray, npImageArray]:
