@@ -40,9 +40,17 @@ print(len(vectors))       # число характеристик
 print(vectors[0].shape)   # размерность вектора яркости
 ```
 
-`intensities()` возвращает список векторов. При `partition_level=2`
-каждый вектор имеет длину `1² + 2² = 5`. Первый вектор описывает
-среднюю яркость, второй — контраст, третий — текстуру.
+`intensities()` возвращает четыре вектора. При `partition_level=2`
+первые три имеют длину `1² + 2² = 5`: это средняя яркость, контраст и
+текстура. Четвёртый — цветовой вектор длины `2 * 5 + 1 = 11`:
+
+* первые 5 значений — нормированные средние `a` по регионам;
+* следующие 5 — нормированные средние `b`;
+* последнее значение — доля визуально цветной площади (`0…1`).
+
+Все значения цветового вектора лежат в `0…1`. Нейтральный `a`/`b`
+кодируется как `0.5`, поэтому серое изображение имеет нейтральный
+цветовой вектор. Для серых изображений цветовые интегралы не считаются.
 
 Основные параметры
 ------------------
@@ -77,6 +85,7 @@ print(vectors[0].shape)   # размерность вектора яркости
 [intensities(image_path)](#intensities)<br>
 [intensities_iter(image_list)](#intensities_iter)<br>
 [similarity(vector1, vector2)](#similarity)<br>
+[similarity_color(color_vector1, color_vector2)](#similarity_color)<br>
 [is_similar(vector1, vector2, threshold=0.1)](#is_similar)<br>
 [similarity_images(image1, image2)](#similarity_images)<br>
 [is_similar_images(image1, image2, threshold=0.1)](#is_similar_images)<br>
@@ -108,6 +117,15 @@ Generator[list[array]]**<br>
 1 — векторы максимально разные
 
 Векторы должны быть одномерными, непустыми и конечными.
+Для цветового вектора используйте [similarity_color](#similarity_color):
+у него другая внутренняя шкала.
+
+#### similarity_color
+
+**similarity_color(color_vector1: array, color_vector2: array) -> float ∈ [0; 1]**<br>
+Сравнивает два цветовых вектора, полученных из `intensities()`.
+Учитывает разницу `a`/`b` по регионам и долю визуально цветной площади.
+Мелкие цветные метки и цветовой шум не делают серое изображение цветным.
 
 #### is_similar
 
@@ -119,8 +137,8 @@ Generator[list[array]]**<br>
 
 **similarity_images(image1: str|Path|BinaryIO, image2: str|Path|BinaryIO)
 -> list[float]**<br>
-Сравнивает изображения и возвращает список расстояний по каждой
-характеристике.
+Сравнивает изображения и возвращает список расстояний: яркость,
+контраст, текстура и цвет. Последний элемент — цветовое расстояние.
 
 #### is_similar_images
 
