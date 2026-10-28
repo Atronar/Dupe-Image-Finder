@@ -56,6 +56,43 @@ def _write_gray_png(path: Path, size: tuple[int, int] = (32, 32)) -> Path:
     return path
 
 
+def _write_color_shape_png(path: Path) -> Path:
+    """Цветное изображение с крупной цветной областью."""
+    cv2 = pytest.importorskip("cv2")
+    image = np.full((128, 128, 3), 255, dtype=np.uint8)
+    image[24:104, 24:104] = (0, 0, 255)  # красный квадрат
+    assert cv2.imwrite(str(path), image)
+    return path
+
+
+def _write_gray_shape_png(path: Path) -> Path:
+    cv2 = pytest.importorskip("cv2")
+    image = np.full((128, 128), 255, dtype=np.uint8)
+    image[24:104, 24:104] = 76
+    assert cv2.imwrite(str(path), image)
+    return path
+
+
+def _write_gray_watermark_png(path: Path) -> Path:
+    """Серое изображение с маленькой насыщенной цветной меткой."""
+    cv2 = pytest.importorskip("cv2")
+    image = np.full((128, 128, 3), 128, dtype=np.uint8)
+    image[58:70, 58:70] = (0, 0, 255)  # около 0.9% площади
+    assert cv2.imwrite(str(path), image)
+    return path
+
+
+def _write_pseudogray_png(path: Path) -> Path:
+    """Трёхканальный файл, визуально серый из-за слабого цветового шума."""
+    cv2 = pytest.importorskip("cv2")
+    rng = np.random.default_rng(7)
+    gray = np.full((128, 128, 3), 128, dtype=np.int16)
+    gray += rng.integers(-2, 3, gray.shape, dtype=np.int16)
+    image = np.clip(gray, 0, 255).astype(np.uint8)
+    assert cv2.imwrite(str(path), image)
+    return path
+
+
 @pytest.fixture
 def color_png(tmp_path: Path) -> Path:
     return _write_color_png(tmp_path / "color.png")
@@ -85,10 +122,19 @@ def _vectors(result) -> list[np.ndarray]:
 
 def _assert_vectors(result, partition_level: int = 2) -> None:
     expected_size = sum(level ** 2 for level in range(1, partition_level + 1))
-    for vector in _vectors(result):
+    vectors = _vectors(result)
+    assert len(vectors) == 4
+    for vector in vectors[:3]:
         assert vector.ndim == 1
         assert vector.size == expected_size
         assert np.isfinite(vector).all()
+
+    color = vectors[-1]
+    assert color.ndim == 1
+    assert color.size == 2 * expected_size + 1
+    assert np.isfinite(color).all()
+    assert np.all(color >= 0.0)
+    assert np.all(color <= 1.0)
 
 
 @pytest.mark.parametrize(
@@ -205,6 +251,85 @@ def test_intensities_color(df, color_png: Path) -> None:
         use_gpu=False,
     )
     _assert_vectors(result)
+
+
+def test_color_distance_distinguishes_color_and_gray(df, tmp_path: Path) -> None:
+    """Цветное и серое изображения должны различаться цветовой компонентой."""
+    color_path = _write_color_shape_png(tmp_path / "color-shape.png")
+    gray_path = _write_gray_shape_png(tmp_path / "gray-shape.png")
+
+    color_vectors = df.intensities(
+        str(color_path), partition_level=2, use_threads=False, use_gpu=False
+    )
+    gray_vectors = df.intensities(
+        str(gray_path), partition_level=2, use_threads=False, use_gpu=False
+    )
+
+    distance = df.similarity_color(color_vectors[-1], gray_vectors[-1])
+    assert distance > 0.5
+    assert df.is_similar_images(
+        str(color_path), str(gray_path),
+        partition_level=2, use_threads=False, use_gpu=False,
+    ) is False
+
+
+def test_color_distance_ignores_small_watermark(df, tmp_path: Path) -> None:
+    """Мелкая цветная метка не должна делать серое изображение цветным."""
+    gray_path = _write_gray_shape_png(tmp_path / "gray.png")
+    watermark_path = _write_gray_watermark_png(tmp_path / "watermark.png")
+
+    gray_vectors = df.intensities(
+        str(gray_path), partition_level=2, use_threads=False, use_gpu=False
+    )
+    watermark_vectors = df.intensities(
+        str(watermark_path), partition_level=2, use_threads=False, use_gpu=False
+    )
+
+    assert df.similarity_color(gray_vectors[-1], watermark_vectors[-1]) < 0.1
+
+
+def test_pseudogray_is_neutral(df, tmp_path: Path) -> None:
+    """Трёхканальный, но визуально серый файл не должен считаться цветным."""
+    gray_path = _write_gray_shape_png(tmp_path / "gray.png")
+    pseudo_path = _write_pseudogray_png(tmp_path / "pseudogray.png")
+
+    gray_vectors = df.intensities(
+        str(gray_path), partition_level=2, use_threads=False, use_gpu=False
+    )
+    pseudo_vectors = df.intensities(
+        str(pseudo_path), partition_level=2, use_threads=False, use_gpu=False
+    )
+
+    assert pseudo_vectors[-1][-1] < 0.01
+    assert df.similarity_color(gray_vectors[-1], pseudo_vectors[-1]) < 0.05
+
+
+def test_ab_backends_agree(df, color_png: Path) -> None:
+    """Все доступные реализации Lab должны давать близкие a и b."""
+    image = df.open_image(str(color_png))
+    reference_a, reference_b = df._get_ab_from_BGR_cv(image)
+    backends = [("custom", df._get_ab_from_BGR_custom)]
+    if df.VIPS_AVAILABLE:
+        backends.append(("vips", df._get_ab_from_BGR_vips))
+    if df._is_gpu_available():
+        backends.append((
+            "gpu",
+            lambda value: tuple(
+                df.from_gpu(component)
+                for component in df._get_ab_from_BGR_gpu(df.to_gpu(value))
+            ),
+        ))
+
+    for name, backend in backends:
+        actual_a, actual_b = backend(image)
+        np.testing.assert_allclose(
+            actual_a, reference_a, atol=1.0,
+            err_msg=f"канал a, бэкенд {name}",
+        )
+        np.testing.assert_allclose(
+            actual_b, reference_b, atol=1.0,
+            err_msg=f"канал b, бэкенд {name}",
+        )
 
 
 def test_intensities_iter_preserves_parameter_names(df, color_png: Path, gray_png: Path) -> None:

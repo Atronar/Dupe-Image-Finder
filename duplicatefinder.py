@@ -71,6 +71,14 @@ if CUPY_AVAILABLE:
     BGR_COEFFS_CUPY = cp.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
 BGR_COEFFS = np.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
 
+# Калибровка цветовой характеристики. Значения хранятся в векторе 0…1:
+# 0.5 — нейтральный a/b, последний элемент — доля визуально цветной площади.
+COLOR_AB_SCALE = 255.0
+COLOR_PRESENCE_NOISE = 2.0
+COLOR_PRESENCE_SCALE = 6.0
+COLOR_PRESENCE_AREA = 0.2
+COLOR_DENOMINATOR = 2.0
+
 # Результат проверки CUDA кэшируется: при отсутствии драйвера или устройства
 # каждая попытка инициализации CuPy может занимать заметное время.
 _gpu_available: bool | None = None
@@ -1109,6 +1117,168 @@ def _grad_integral_image(
         grad_mag = np.sqrt(grad_x**2 + grad_y**2)
     return _integral_image(grad_mag, sq=False)
 
+@overload
+def _get_ab_from_BGR(image: npImageArray) -> tuple[npImageArray, npImageArray]: ...
+@overload
+def _get_ab_from_BGR(image: cpImageArray) -> tuple[cpImageArray, cpImageArray]: ...
+def _get_ab_from_BGR(
+    image: npImageArray | cpImageArray
+) -> tuple[npImageArray, npImageArray] | tuple[cpImageArray, cpImageArray]:
+    # Для серых изображений цветовые каналы нейтральны: a = b = 0.
+    if image.ndim < 3:
+        if _is_cupy_array(image):
+            lab_a = cp.zeros_like(image)
+        else:
+            lab_a = np.zeros_like(image)
+        return lab_a, lab_a
+    if _is_cupy_array(image):
+        return _get_ab_from_BGR_gpu(image)
+    if CV2_AVAILABLE:
+        return _get_ab_from_BGR_cv(image)
+    if VIPS_AVAILABLE:
+        return _get_ab_from_BGR_vips(image)
+    return _get_ab_from_BGR_custom(image)
+
+def _get_ab_from_BGR_cv(image: npImageArray) -> tuple[npImageArray, npImageArray]:
+    if not CV2_AVAILABLE:
+        raise ModuleNotFoundError(
+            "opencv не установлен. "
+            "Необходимо использовать функцию _get_ab_from_BGR()"
+        )
+    # Для float-входа OpenCV возвращает Lab с нейтралью a = b = 0.
+    # Это избавляет от смещения 128, которое раньше разбавляло цвет.
+    lab = cv2.cvtColor(
+        image.astype(num_dtype, copy=False) / 255.0,
+        cv2.COLOR_BGR2Lab
+    )
+    return (
+        np.ascontiguousarray(lab[..., 1], dtype=num_dtype),
+        np.ascontiguousarray(lab[..., 2], dtype=num_dtype),
+    )
+
+def _get_ab_from_BGR_vips(image: npImageArray) -> tuple[npImageArray, npImageArray]:
+    if not VIPS_AVAILABLE:
+        raise ModuleNotFoundError(
+            "pyvips не установлен. "
+            "Необходимо использовать функцию _get_ab_from_BGR()"
+        )
+    # libvips ожидает RGB, а библиотека хранит BGR. Переворачиваем
+    # последнюю ось (каналы), а не первую (строки).
+    rgb = np.ascontiguousarray(image[..., ::-1])
+    vips_image = pyvips.Image.new_from_memory(
+        rgb.tobytes(),
+        rgb.shape[1],
+        rgb.shape[0],
+        bands=3,
+        format="float"
+    )
+    lab_image: pyvips.Image = vips_image.colourspace("lab")
+    lab_array = lab_image.numpy(dtype=num_dtype)
+    return (
+        np.ascontiguousarray(lab_array[..., 1], dtype=num_dtype),
+        np.ascontiguousarray(lab_array[..., 2], dtype=num_dtype),
+    )
+
+def _get_ab_from_BGR_gpu(image: cpImageArray) -> tuple[cpImageArray, cpImageArray]:
+    if not CUPY_AVAILABLE:
+        raise ModuleNotFoundError(
+            "cupy не установлен. "
+            "Необходимо использовать функцию _get_ab_from_BGR()"
+        )
+    # Нормализация BGR [0, 255] → [0, 1]
+    bgr = image.astype(num_dtype, copy=False) / 255.0
+
+    # Обратная гамма-коррекция sBGR → линейный BGR
+    bgr = cp.where(bgr <= 0.04045, bgr / 12.92, ((bgr + 0.055) / 1.055) ** 2.4)
+
+    # BGR → XYZ (матричное преобразование)
+    mat = cp.array(
+        #       X       Y       Z
+        [[0.180423, 0.072169, 0.950227], # B
+        [0.35758 , 0.71516 , 0.119193], # G
+        [0.412453, 0.212671, 0.019334]], # R
+        dtype = num_dtype
+    )
+
+    xyz = cp.dot(bgr, mat)
+
+    # Нормализация XYZ относительно D65 (стандартная белая точка)
+    xyz /= cp.array([0.950456, 1.0, 1.088754])
+
+    # XYZ → Lab
+    delta = 6/29
+    delta3 = delta ** 3
+
+    f = lambda t: cp.where(t > delta3, t ** (1/3), (24389 * t + 432) / 3132)
+    fx, fy, fz = f(xyz[..., 0]), f(xyz[..., 1]), f(xyz[..., 2])
+
+    a = 500 * (fx - fy)
+    b = 200 * (fy - fz)
+
+    return a, b
+
+def _get_ab_from_BGR_custom(image: npImageArray) -> tuple[npImageArray, npImageArray]:
+    # Нормализация BGR [0, 255] → [0, 1]
+    bgr = image.astype(num_dtype, copy=False) / 255.0
+
+    # Обратная гамма-коррекция sBGR → линейный BGR
+    bgr = np.where(bgr <= 0.04045, bgr / 12.92, ((bgr + 0.055) / 1.055) ** 2.4)
+
+    # BGR → XYZ (матричное преобразование)
+    mat = np.array(
+        #       X       Y       Z
+        [[0.180423, 0.072169, 0.950227], # B
+        [0.35758 , 0.71516 , 0.119193], # G
+        [0.412453, 0.212671, 0.019334]], # R
+        dtype = num_dtype
+    )
+
+    xyz = np.dot(bgr, mat)
+
+    # Нормализация XYZ относительно D65 (стандартная белая точка)
+    xyz /= np.array([0.950456, 1.0, 1.088754])
+
+    # XYZ → Lab
+    delta = 6/29
+    delta3 = delta ** 3
+
+    f = lambda t: np.where(t > delta3, t ** (1/3), (24389 * t + 432) / 3132)
+    fx, fy, fz = f(xyz[..., 0]), f(xyz[..., 1]), f(xyz[..., 2])
+
+    a = 500 * (fx - fy)
+    b = 200 * (fy - fz)
+
+    return np.asarray(a, dtype=num_dtype), np.asarray(b, dtype=num_dtype)
+
+def _color_presence(
+    lab_a: npImageArray | cpImageArray,
+    lab_b: npImageArray | cpImageArray
+) -> float:
+    """Доля визуально цветной площади изображения в диапазоне 0…1.
+
+    Слабая хрома (шум, почти серые пиксели) не считается цветом. Это
+    позволяет отличать цветное изображение от серого, не определяя
+    цветовое пространство файла и не делая отдельный проход по пикселям:
+    a и b уже получены при преобразовании в Lab.
+    """
+    p = cp if _is_cupy_array(lab_a) else np
+    chroma = p.hypot(lab_a, lab_b)
+    soft = p.clip(
+        (chroma - COLOR_PRESENCE_NOISE) / COLOR_PRESENCE_SCALE,
+        0.0,
+        1.0
+    )
+    return float(p.mean(soft))
+
+def _neutral_color_vector(partition_level: int) -> Vector:
+    """Нейтральный цветовой вектор для серого изображения."""
+    size = sum(level ** 2 for level in range(1, partition_level + 1))
+    return np.concatenate((
+        np.full(size, 0.5, dtype=num_dtype),
+        np.full(size, 0.5, dtype=num_dtype),
+        np.array([0.0], dtype=num_dtype),
+    ))
+
 def intensities(
     image_path: str | Path | BinaryIO,
     partition_level: int = 2,
@@ -1138,6 +1308,8 @@ def intensities(
     Первый вектор основан на средней интенсивности
     Второй - на контрасте
     Третий - на текстуре
+    Четвёртый - цветовая характеристика: нормированные a и b по регионам
+    и доля визуально цветной площади. Значения цветового вектора лежат в 0…1.
     '''
     image = open_image(image_path)
 
@@ -1157,6 +1329,10 @@ def intensities(
 
     # Размытие изображения
     image_gpu = _gauss_blur(image_gpu, blur_ksize)
+
+    # Цветные каналы Lab и доля визуально цветной площади
+    lab_a, lab_b = _get_ab_from_BGR(image_gpu)
+    color_presence = _color_presence(lab_a, lab_b)
 
     # Приведение к значениям яркости (градациям серого)
     if image.ndim != 2:
@@ -1206,6 +1382,22 @@ def intensities(
                     (x_size, y_size),
                     use_threads = use_threads
                 ))
+
+    # Цветовая характеристика добавляется отдельно: её нужно сравнивать
+    # не общей нормой, а метрикой цветового расстояния.
+    if image.ndim >= 3 and color_presence > 0.0:
+        integral_lab_a = _integral_image(lab_a, sq=False)
+        integral_lab_b = _integral_image(lab_b, sq=False)
+        features_list.append(_calculate_color_vector(
+            integral_lab_a,
+            integral_lab_b,
+            partition_level,
+            (x_size, y_size),
+            color_presence,
+        ))
+    else:
+        features_list.append(_neutral_color_vector(partition_level))
+
     return features_list
 
 def _process_calculate_features(
@@ -1332,6 +1524,56 @@ def _level_intensities(
     safe_areas = p.where(areas_gpu > 0, areas_gpu, 1)
     features = p.where(areas_gpu > 0, sums / safe_areas, 0)
     return p.asarray(features, dtype=num_dtype).reshape(-1)
+
+def _calculate_color_vector(
+    integral_a: npIntegralImageArray | cpIntegralImageArray,
+    integral_b: npIntegralImageArray | cpIntegralImageArray,
+    partition_level: int,
+    image_size: tuple[int, int],
+    presence: float,
+) -> Vector:
+    """Строит нормированный цветовой вектор изображения.
+
+    Формат вектора: сначала средние a по регионам, затем средние b,
+    последним элементом — доля визуально цветной площади. Значения a и b
+    отображаются в 0…1 относительно нейтрали 0.5; presence тоже 0…1.
+    """
+    p = cp if _is_cupy_array(integral_a) else np
+    x_size, y_size = image_size
+    size = sum(level ** 2 for level in range(1, partition_level + 1))
+    a_features = p.empty(size, dtype=num_dtype)
+    b_features = p.empty(size, dtype=num_dtype)
+    features_idx = 0
+
+    for current_partition_level in range(1, partition_level + 1):
+        part_size = (
+            x_size / current_partition_level,
+            y_size / current_partition_level
+        )
+        a_part = _level_intensities(
+            integral_a,
+            current_partition_level,
+            image_size,
+            part_size,
+        )
+        b_part = _level_intensities(
+            integral_b,
+            current_partition_level,
+            image_size,
+            part_size,
+        )
+        a_features[features_idx:features_idx + a_part.size] = a_part
+        b_features[features_idx:features_idx + b_part.size] = b_part
+        features_idx += a_part.size
+
+    a_norm = p.clip(0.5 + a_features / COLOR_AB_SCALE, 0.0, 1.0)
+    b_norm = p.clip(0.5 + b_features / COLOR_AB_SCALE, 0.0, 1.0)
+    color = p.concatenate((
+        a_norm,
+        b_norm,
+        p.asarray([presence], dtype=num_dtype),
+    ))
+    return from_gpu(color)
 
 def _calculate_features_sq(
     integral: npIntegralImageArray | cpIntegralImageArray,
@@ -1593,13 +1835,63 @@ def is_similar(vector1: Vector, vector2: Vector, threshold: float=0.1) -> bool:
         raise ValueError("Порог должен быть конечным неотрицательным числом")
     return similarity(vector1,vector2) < threshold
 
+def similarity_color(
+    color_vector1: Vector | tuple | list,
+    color_vector2: Vector | tuple | list
+) -> float:
+    """Цветовое расстояние между нормированными цветовыми векторами.
+
+    Вектор имеет формат: средние a по регионам, средние b по регионам,
+    последний элемент — доля визуально цветной площади. Результат 0…1:
+    0 — цвет совпадает, 1 — максимальное различие.
+    """
+    vector1 = np.asarray(color_vector1, dtype=num_dtype)
+    vector2 = np.asarray(color_vector2, dtype=num_dtype)
+
+    if vector1.ndim != 1 or vector2.ndim != 1:
+        raise ValueError("Цветовые векторы должны быть одномерными")
+    if vector1.shape != vector2.shape:
+        raise ValueError(
+            f"Размеры цветовых векторов не совпадают: "
+            f"{vector1.shape} != {vector2.shape}"
+        )
+    if vector1.size < 3 or vector1.size % 2 == 0:
+        raise ValueError(
+            "Цветовой вектор должен содержать a, b и долю цветной площади"
+        )
+    if not np.isfinite(vector1).all() or not np.isfinite(vector2).all():
+        raise ValueError("Цветовые векторы содержат NaN или бесконечные значения")
+
+    region_count = (vector1.size - 1) // 2
+    a1 = (vector1[:region_count] - 0.5) * COLOR_AB_SCALE
+    b1 = (vector1[region_count:-1] - 0.5) * COLOR_AB_SCALE
+    a2 = (vector2[:region_count] - 0.5) * COLOR_AB_SCALE
+    b2 = (vector2[region_count:-1] - 0.5) * COLOR_AB_SCALE
+    presence1 = float(vector1[-1])
+    presence2 = float(vector2[-1])
+
+    if not 0.0 <= presence1 <= 1.0 or not 0.0 <= presence2 <= 1.0:
+        raise ValueError("Доля цветной площади должна быть в диапазоне 0…1")
+
+    # Средняя по регионам нормированная разница a/b. Нейтральная добавка
+    # не даёт почти серым изображениям давать большое расстояние из-за шума.
+    denominator = np.hypot(a1, b1) + np.hypot(a2, b2) + COLOR_DENOMINATOR
+    region_distance = np.hypot(a1 - a2, b1 - b2) / denominator
+    color_distance = float(np.mean(region_distance))
+
+    # Мелкие цветные watermark и цветовой шум не должны делать визуально
+    # серое изображение цветным.
+    presence_factor = min(1.0, (presence1 + presence2) / COLOR_PRESENCE_AREA)
+    return float(np.clip(color_distance * presence_factor, 0.0, 1.0))
+
 def similarity_images(
     image1: str | Path | BinaryIO,
     image2: str | Path | BinaryIO,
     **kwargs
 ) -> list[float]:
     '''Уровень похожести между изображениями.
-    0 - идентичные, 1 - максимально разные
+    0 - идентичные, 1 - максимально разные.
+    Последний элемент списка — цветовое расстояние.
     '''
     if kwargs.get("use_threads", True):
         with ThreadPoolExecutor(2) as executor:
@@ -1610,7 +1902,16 @@ def similarity_images(
     else:
         vectors1 = intensities(image1, **kwargs)
         vectors2 = intensities(image2, **kwargs)
-    return [similarity(vectors1[vector_num], vectors2[vector_num]) for vector_num in range(len(vectors1))]
+
+    if len(vectors1) != len(vectors2):
+        raise ValueError("Количество характеристик изображений не совпадает")
+
+    distances = [
+        similarity(vectors1[index], vectors2[index])
+        for index in range(len(vectors1) - 1)
+    ]
+    distances.append(similarity_color(vectors1[-1], vectors2[-1]))
+    return distances
 
 def is_similar_images(
     image1: str | Path | BinaryIO,
