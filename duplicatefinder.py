@@ -14,6 +14,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, BinaryIO, Generator, Iterable, Literal, TYPE_CHECKING, overload
 from io import IOBase, TextIOBase
+import hashlib
 import numpy as np
 import numpy.typing as npt
 
@@ -53,6 +54,10 @@ except ImportError:
 # не входят, чтобы приложения не зависели от деталей реализации.
 __all__ = [
     "ImageDecodeError",
+    "FEATURE_VERSION",
+    "FEATURE_NAMES",
+    "feature_lengths",
+    "config_hash",
     "open_image",
     "open_image_cv",
     "open_image_vips",
@@ -94,6 +99,50 @@ else:
 if CUPY_AVAILABLE:
     BGR_COEFFS_CUPY = cp.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
 BGR_COEFFS = np.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
+
+# Версия определения характеристик. Увеличивается при любом изменении,
+# после которого старые векторы становятся несравнимыми с новыми:
+# формата, нормировки или констант цветовой характеристики.
+FEATURE_VERSION = 1
+
+# Стабильные машинные имена характеристик в порядке intensities().
+# Русские подписи нужны только для документации и интерфейса.
+FEATURE_NAMES = ("brightness", "contrast", "texture", "color")
+
+def _partition_size(partition_level: int) -> int:
+    """Число регионов на всех уровнях разбиения."""
+    if partition_level < 1:
+        raise ValueError("partition_level должен быть не меньше 1")
+    return sum(level ** 2 for level in range(1, partition_level + 1))
+
+def feature_lengths(partition_level: int = 2) -> tuple[int, int, int, int]:
+    """Длины векторов характеристик в порядке intensities().
+
+    Яркость, контраст и текстура занимают по одному значению на регион,
+    цветовой вектор — пять: нейтральная опора и положительная и
+    отрицательная части a и b.
+    """
+    size = _partition_size(partition_level)
+    return size, size, size, 5 * size
+
+def config_hash(
+    partition_level: int = 2,
+    blur_ksize: int | tuple[int, int] = (3, 3),
+) -> str:
+    """Стабильный хеш настроек, влияющих на значения векторов.
+
+    Подходит как часть ключа кэша вместе с размером файла, временем
+    изменения и FEATURE_VERSION. Небольшие различия между бэкендами
+    (OpenCV, pyvips, NumPy, CuPy) в хеш не входят: они сравнимы с
+    допусками similarity().
+    """
+    _partition_size(partition_level)
+    if isinstance(blur_ksize, int):
+        kx = ky = blur_ksize
+    else:
+        kx, ky = blur_ksize
+    payload = f"{FEATURE_VERSION}|{partition_level}|{kx}x{ky}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 # Калибровка цветовой характеристики. Цветовой вектор состоит из
 # нейтральной опоры и положительных/отрицательных частей a и b.

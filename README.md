@@ -97,6 +97,8 @@ print(vectors[0].shape)   # размерность вектора яркости
 [is_similar(vector1, vector2, threshold=0.1)](#is_similar)<br>
 [similarity_images(image1, image2)](#similarity_images)<br>
 [is_similar_images(image1, image2, threshold=0.1)](#is_similar_images)<br>
+[feature_lengths(partition_level=2)](#метаданные-для-кэша)<br>
+[config_hash(partition_level=2, blur_ksize=(3, 3))](#метаданные-для-кэша)<br>
 
 #### intensities
 
@@ -146,6 +148,27 @@ Generator[list[array]]**<br>
 **is_similar_images(image1: str|Path|BinaryIO, image2: str|Path|BinaryIO,
 threshold: float=0.1) -> bool**<br>
 Возвращает *True*, если изображения похожи по всем характеристикам.
+
+#### Метаданные для кэша
+
+**FEATURE_VERSION: int**, **FEATURE_NAMES: tuple[str, ...]**<br>
+Версия определения характеристик и стабильные машинные имена в порядке
+`intensities()`. Версия увеличивается, когда старые векторы становятся
+несравнимыми с новыми: при изменении формата, нормировки или констант
+цветовой характеристики.
+
+**feature_lengths(partition_level=2) -> tuple[int, int, int, int]**<br>
+Длины векторов яркости, контраста, текстуры и цвета. Первые три равны
+числу регионов `N`, цветовой вектор занимает `5N`.
+
+**config_hash(partition_level=2, blur_ksize=(3, 3)) -> str**<br>
+Стабильный хеш настроек, влияющих на значения векторов. Вместе с
+`FEATURE_VERSION`, размером файла и временем изменения подходит как ключ
+кэша. Небольшие различия между бэкендами в хеш не входят.
+
+Библиотека не хранит базу векторов: для динамического каталога приложение
+может использовать SQLite и пересчитывать векторы только при изменении
+размера, времени модификации, `FEATURE_VERSION` или `config_hash`.
 
 Тесты и бенчмарк
 ----------------

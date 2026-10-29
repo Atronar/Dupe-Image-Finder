@@ -158,6 +158,27 @@ def test_public_api_names_exist(df) -> None:
         assert hasattr(df, name), name
 
 
+def test_feature_metadata_matches_intensities(df, color_png: Path) -> None:
+    """Метаданные о длинах векторов должны совпадать с intensities()."""
+    vectors = df.intensities(
+        str(color_png),
+        partition_level=3,
+        use_threads=False,
+        use_gpu=False,
+    )
+    assert df.FEATURE_VERSION >= 1
+    assert len(df.FEATURE_NAMES) == len(vectors)
+    assert list(df.feature_lengths(3)) == [vector.size for vector in vectors]
+
+
+def test_config_hash_depends_on_vector_settings(df) -> None:
+    assert df.config_hash(2) == df.config_hash(2, (3, 3))
+    assert df.config_hash(2, 3) == df.config_hash(2, (3, 3))
+    assert df.config_hash(2) != df.config_hash(3)
+    with pytest.raises(ValueError):
+        df.feature_lengths(0)
+
+
 def test_runtime_without_cupy(large_color_png: Path) -> None:
     """При отсутствии CuPy обработка изображения должна продолжиться на CPU."""
     pytest.importorskip("cv2")
