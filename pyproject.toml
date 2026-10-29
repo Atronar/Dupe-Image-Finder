@@ -21,10 +21,19 @@ dev = [
     "pytest>=7.0",
     "opencv-python>=4.8",
     "pillow>=10",
+    "mypy>=1.8",
+    "pyflakes>=3.0",
 ]
 
 [tool.setuptools]
 py-modules = ["duplicatefinder"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+# Проверка типов пока неблокирующая: ошибки в необязательных бэкендах
+# (CuPy, pyvips) исправляются постепенно.
+warn_unused_ignores = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -49,6 +49,22 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
+# Публичный API библиотеки. Служебные функции с подчёркиванием в него
+# не входят, чтобы приложения не зависели от деталей реализации.
+__all__ = [
+    "ImageDecodeError",
+    "open_image",
+    "open_image_cv",
+    "open_image_vips",
+    "open_image_pil",
+    "intensities",
+    "intensities_iter",
+    "similarity",
+    "is_similar",
+    "similarity_images",
+    "is_similar_images",
+]
+
 class ImageDecodeError(Exception):
     """Изображение не удалось декодировать ни одним доступным бэкендом.
 

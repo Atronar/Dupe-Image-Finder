@@ -151,6 +151,13 @@ def test_import_without_optional_dependencies(blocked: tuple[str, ...]) -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_public_api_names_exist(df) -> None:
+    """Все имена из __all__ должны существовать в модуле."""
+    assert df.__all__
+    for name in df.__all__:
+        assert hasattr(df, name), name
+
+
 def test_runtime_without_cupy(large_color_png: Path) -> None:
     """При отсутствии CuPy обработка изображения должна продолжиться на CPU."""
     pytest.importorskip("cv2")

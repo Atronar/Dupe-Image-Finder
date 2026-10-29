@@ -3,3 +3,5 @@
 opencv-python>=4.8
 pillow>=10
 pytest>=7.0
+pyflakes>=3.0
+mypy>=1.8
