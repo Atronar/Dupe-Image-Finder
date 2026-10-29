@@ -49,6 +49,14 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
+class ImageDecodeError(Exception):
+    """Изображение не удалось декодировать ни одним доступным бэкендом.
+
+    Отличается от FileNotFoundError (файла нет) и ModuleNotFoundError
+    (не установлен декодер): файл существует, но его содержимое не
+    является поддерживаемым изображением или повреждено.
+    """
+
 num_dtype = np.float32
 num_integral_dtype = np.float32 | np.float64 | np.uint64 | np.int64
 Vector = npt.NDArray[num_dtype]
@@ -159,6 +167,26 @@ def _is_binary_file_like(obj: object) -> bool:
     аннотация. IOBase покрывает BytesIO, BufferedIOBase и RawIOBase.
     """
     return isinstance(obj, IOBase) and not isinstance(obj, TextIOBase)
+
+def _describe_image_source(source: str | Path | BinaryIO) -> str:
+    """Возвращает читаемое описание источника для сообщений об ошибках."""
+    if _is_binary_file_like(source):
+        return "поток"
+    return str(source)
+
+def _check_image_source(source: str | Path | BinaryIO) -> None:
+    """Проверяет, что путь существует и указывает на файл.
+
+    Проверка выполняется до декодирования, чтобы отсутствие файла не
+    маскировалось ошибкой декодера.
+    """
+    if _is_binary_file_like(source):
+        return
+    path = Path(source)
+    if not path.exists():
+        raise FileNotFoundError(f"Файл не найден: {path}")
+    if not path.is_file():
+        raise FileNotFoundError(f"Путь не является файлом: {path}")
 
 def _normalize_image_range(image: npt.NDArray[Any]) -> npImageArray:
     """Приводит изображение к float32 в диапазоне [0, 255].
@@ -305,29 +333,41 @@ def _apply_exif_orientation(image: npt.NDArray[Any], orientation: int) -> npt.ND
 def open_image(image_path: str|Path|BinaryIO) -> npImageArray:
     """Функция, открывающая изображение по его пути, возвращается матрица пикселей в BGR
     image_path: путь к изображению
+
+    Декодеры перебираются в порядке приоритета (OpenCV, pyvips, Pillow):
+    если один не умеет читать формат, используется следующий. Если файл
+    не существует, возбуждается FileNotFoundError; если ни один
+    установленный декодер не смог прочитать содержимое —
+    ImageDecodeError; если декодеров нет вовсе — ModuleNotFoundError.
     """
-    try:
-        gif = False
-        if CV2_AVAILABLE:
-            return open_image_cv(image_path)
-    except FileNotFoundError:
-        gif = True
-        pass
+    _check_image_source(image_path)
+
+    decoders = []
+    if CV2_AVAILABLE:
+        decoders.append(("OpenCV", open_image_cv))
     if VIPS_AVAILABLE:
-        return open_image_vips(image_path)
+        decoders.append(("pyvips", open_image_vips))
     if PIL_AVAILABLE:
-        return open_image_pil(image_path)
-    if gif:
-        raise ModuleNotFoundError(
-            "Для работы с данным типом изображений необходимо "
-            "установить хотя бы одну из этих библиотек: "
-            "pyvips, pil"
-        )
-    else:
+        decoders.append(("Pillow", open_image_pil))
+
+    if not decoders:
         raise ModuleNotFoundError(
             "Необходимо установить хотя бы одну из этих библиотек: "
             "pyvips, pil, opencv"
         )
+
+    errors = []
+    for name, decoder in decoders:
+        try:
+            return decoder(image_path)
+        except ImageDecodeError as error:
+            errors.append(f"{name}: {error}")
+
+    raise ImageDecodeError(
+        "Не удалось декодировать изображение "
+        f"{_describe_image_source(image_path)}. "
+        + "; ".join(errors)
+    )
 
 def open_image_vips(
     image_path: str | Path | BinaryIO,
@@ -345,28 +385,41 @@ def open_image_vips(
             "pyvips не установлен. "
             "Необходимо использовать функцию open_image()"
         )
+    _check_image_source(image_path)
 
-    if _is_binary_file_like(image_path):
-        # Создать источник из буфера
-        pos = image_path.tell()
-        try:
-            image_data = image_path.read()
-        finally:
-            image_path.seek(pos) # возвращаем указатель файла к исходной позиции
-        # Буферные загрузчики libvips не принимают format как опцию:
-        # формат определяется по содержимому буфера. Параметр file_format
-        # оставлен для совместимости и не влияет на буферный путь.
-        img = pyvips.Image.new_from_buffer(image_data, "", access="sequential")
-        del image_data
-    else:
-        img = pyvips.Image.new_from_file(image_path, access="sequential")
+    try:
+        if _is_binary_file_like(image_path):
+            # Создать источник из буфера
+            pos = image_path.tell()
+            try:
+                image_data = image_path.read()
+            finally:
+                image_path.seek(pos) # возвращаем указатель файла к исходной позиции
+            # Буферные загрузчики libvips не принимают format как опцию:
+            # формат определяется по содержимому буфера. Параметр file_format
+            # оставлен для совместимости и не влияет на буферный путь.
+            img = pyvips.Image.new_from_buffer(image_data, "", access="sequential")
+            del image_data
+        else:
+            img = pyvips.Image.new_from_file(image_path, access="sequential")
+    except pyvips.Error as error:
+        raise ImageDecodeError(
+            "pyvips не смог декодировать изображение "
+            f"{_describe_image_source(image_path)}"
+        ) from error
 
     if not img:
-        raise FileNotFoundError("Невозможно прочитать файл")
+        raise ImageDecodeError(
+            "pyvips не смог декодировать изображение "
+            f"{_describe_image_source(image_path)}"
+        )
 
     if isinstance(img, list):
         if not img:
-            raise FileNotFoundError("Невозможно прочитать файл")
+            raise ImageDecodeError(
+                "pyvips не смог декодировать изображение "
+                f"{_describe_image_source(image_path)}"
+            )
         image: pyvips.Image = img[0]
     else:
         image: pyvips.Image = img
@@ -415,6 +468,7 @@ def open_image_cv(image_path: str|Path|BinaryIO) -> npImageArray:
             "opencv не установлен. "
             "Необходимо использовать функцию open_image()"
         )
+    _check_image_source(image_path)
 
     def load_image(image_path: str|Path|BinaryIO, flags: int) -> MatLike:
         if _is_binary_file_like(image_path):
@@ -432,7 +486,10 @@ def open_image_cv(image_path: str|Path|BinaryIO) -> npImageArray:
                 with open(image_path, "rb") as image_file:
                     return load_image(image_file, flags)
         if img is None:
-            raise FileNotFoundError("Невозможно прочитать файл")
+            raise ImageDecodeError(
+                "OpenCV не смог декодировать изображение "
+                f"{_describe_image_source(image_path)}"
+            )
         return img
     img = load_image(image_path, cv2.IMREAD_UNCHANGED)
     # IMREAD_UNCHANGED не применяет EXIF-ориентацию, поэтому делаем это сами.
@@ -496,8 +553,19 @@ def open_image_pil(image_path: str|Path|BinaryIO) -> npImageArray:
             "pillow не установлен. "
             "Необходимо использовать функцию open_image()"
         )
+    _check_image_source(image_path)
 
-    with pil.open(image_path) as img:
+    try:
+        image_context = pil.open(image_path)
+    except FileNotFoundError:
+        raise
+    except (pil.UnidentifiedImageError, OSError) as error:
+        raise ImageDecodeError(
+            "Pillow не смог декодировать изображение "
+            f"{_describe_image_source(image_path)}"
+        ) from error
+
+    with image_context as img:
         # Pillow по умолчанию не применяет EXIF-ориентацию.
         img = pil_ops.exif_transpose(img)
         convert_to = None

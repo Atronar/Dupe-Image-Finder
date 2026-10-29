@@ -574,6 +574,92 @@ def test_open_image_returns_bgr(df, color_png: Path) -> None:
     np.testing.assert_allclose(image[0, 0], [10, 20, 30], atol=1)
 
 
+def test_open_image_missing_path_raises_file_not_found(df, tmp_path: Path) -> None:
+    """Отсутствующий файл — это FileNotFoundError, а не ошибка декодера."""
+    with pytest.raises(FileNotFoundError):
+        df.open_image(str(tmp_path / "missing.png"))
+
+
+def test_open_image_corrupt_file_raises_decode_error(df, tmp_path: Path) -> None:
+    """Повреждённый файл должен давать ImageDecodeError, а не совет ставить пакет."""
+    path = tmp_path / "broken.jpg"
+    path.write_bytes(b"this is not an image" * 64)
+
+    with pytest.raises(df.ImageDecodeError):
+        df.open_image(str(path))
+
+    openers = []
+    if df.CV2_AVAILABLE:
+        openers.append(df.open_image_cv)
+    if df.VIPS_AVAILABLE:
+        openers.append(df.open_image_vips)
+    if df.PIL_AVAILABLE:
+        openers.append(df.open_image_pil)
+    assert openers, "нет ни одного декодера"
+    for opener in openers:
+        with pytest.raises(df.ImageDecodeError):
+            opener(str(path))
+
+
+def test_decoders_handle_cmyk(df, tmp_path: Path) -> None:
+    """CMYK JPEG должен читаться всеми декодерами без падения.
+
+    Точные значения зависят от цветового профиля, поэтому проверяется
+    только то, что красный остаётся красным, а не превращается в серый.
+    """
+    pil = pytest.importorskip("PIL.Image")
+    path = tmp_path / "cmyk.jpg"
+    pil.new("CMYK", (32, 32), (0, 255, 255, 0)).save(path, quality=95)
+
+    openers = []
+    if df.CV2_AVAILABLE:
+        openers.append(df.open_image_cv)
+    if df.VIPS_AVAILABLE:
+        openers.append(df.open_image_vips)
+    if df.PIL_AVAILABLE:
+        openers.append(df.open_image_pil)
+    if not openers:
+        pytest.skip("нет ни одного декодера")
+
+    for opener in openers:
+        image = opener(str(path))
+        assert image.shape == (32, 32, 3)
+        assert image.dtype == np.float32
+        blue, green, red = (image[..., index].mean() for index in range(3))
+        assert red > 180, opener.__name__
+        assert blue < 80, opener.__name__
+        assert green < 80, opener.__name__
+
+
+def test_animated_gif_uses_first_frame(df, tmp_path: Path) -> None:
+    """Анимированный GIF читается по первому кадру всеми декодерами."""
+    pil = pytest.importorskip("PIL.Image")
+    path = tmp_path / "animated.gif"
+    first = pil.new("RGB", (16, 16), (255, 0, 0))
+    second = pil.new("RGB", (16, 16), (0, 0, 255))
+    first.save(
+        path,
+        save_all=True,
+        append_images=[second],
+        duration=100,
+        loop=0,
+    )
+
+    openers = [df.open_image]
+    if df.CV2_AVAILABLE:
+        openers.append(df.open_image_cv)
+    if df.VIPS_AVAILABLE:
+        openers.append(df.open_image_vips)
+    if df.PIL_AVAILABLE:
+        openers.append(df.open_image_pil)
+
+    for opener in openers:
+        image = opener(str(path))
+        assert image.shape[:2] == (16, 16)
+        # Первый кадр красный; в BGR это [0, 0, 255].
+        np.testing.assert_allclose(image[0, 0], [0, 0, 255], atol=3)
+
+
 def test_open_image_cv_normalizes_uint16(df, tmp_path: Path) -> None:
     """16-битное изображение должно приходить в том же диапазоне 0…255."""
     cv2 = pytest.importorskip("cv2")
