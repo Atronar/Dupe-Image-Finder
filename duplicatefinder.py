@@ -78,6 +78,10 @@ COLOR_AB_SCALE = 50.0
 COLOR_PRESENCE_NOISE = 2.0
 COLOR_PRESENCE_SCALE = 6.0
 
+# До этого уровня NumPy reduceat быстрее двух интегральных изображений,
+# выше — выгоднее один раз посчитать интегралы.
+COLOR_REDUCEAT_MAX_LEVEL = 4
+
 # Результат проверки CUDA кэшируется: при отсутствии драйвера или устройства
 # каждая попытка инициализации CuPy может занимать заметное время.
 _gpu_available: bool | None = None
@@ -1251,6 +1255,45 @@ def _get_ab_from_BGR_custom(image: npImageArray) -> tuple[npImageArray, npImageA
 
     return np.asarray(a, dtype=num_dtype), np.asarray(b, dtype=num_dtype)
 
+def _color_presence_cv(
+    lab_a: npImageArray,
+    lab_b: npImageArray
+) -> float:
+    """Доля визуально цветной площади средствами OpenCV."""
+    chroma = cv2.magnitude(lab_a, lab_b)
+    soft = np.clip(
+        (chroma - COLOR_PRESENCE_NOISE) / COLOR_PRESENCE_SCALE,
+        0.0,
+        1.0
+    )
+    return float(cv2.mean(soft)[0])
+
+def _color_presence_gpu(
+    lab_a: cpImageArray,
+    lab_b: cpImageArray
+) -> float:
+    """Доля визуально цветной площади средствами CuPy."""
+    chroma = cp.hypot(lab_a, lab_b)
+    soft = cp.clip(
+        (chroma - COLOR_PRESENCE_NOISE) / COLOR_PRESENCE_SCALE,
+        0.0,
+        1.0
+    )
+    return float(cp.mean(soft))
+
+def _color_presence_custom(
+    lab_a: npImageArray,
+    lab_b: npImageArray
+) -> float:
+    """Доля визуально цветной площади средствами NumPy."""
+    chroma = np.hypot(lab_a, lab_b)
+    soft = np.clip(
+        (chroma - COLOR_PRESENCE_NOISE) / COLOR_PRESENCE_SCALE,
+        0.0,
+        1.0
+    )
+    return float(np.mean(soft))
+
 def _color_presence(
     lab_a: npImageArray | cpImageArray,
     lab_b: npImageArray | cpImageArray
@@ -1262,14 +1305,11 @@ def _color_presence(
     цветовое пространство файла и не делая отдельный проход по пикселям:
     a и b уже получены при преобразовании в Lab.
     """
-    p = cp if _is_cupy_array(lab_a) else np
-    chroma = p.hypot(lab_a, lab_b)
-    soft = p.clip(
-        (chroma - COLOR_PRESENCE_NOISE) / COLOR_PRESENCE_SCALE,
-        0.0,
-        1.0
-    )
-    return float(p.mean(soft))
+    if _is_cupy_array(lab_a):
+        return _color_presence_gpu(lab_a, lab_b)
+    if CV2_AVAILABLE:
+        return _color_presence_cv(lab_a, lab_b)
+    return _color_presence_custom(lab_a, lab_b)
 
 def _neutral_color_vector(partition_level: int) -> Vector:
     """Нейтральный цветовой вектор для серого изображения."""
@@ -1384,14 +1424,13 @@ def intensities(
                     use_threads = use_threads
                 ))
 
-    # Цветовые интегралы считаются только для визуально цветных
-    # изображений; для серых сразу используется нейтральный вектор.
+    # Средние по регионам считаются сразу по a и b: интегральные
+    # изображения для цвета не нужны. Для серых изображений используется
+    # нейтральный вектор.
     if image.ndim >= 3 and color_presence > 0.0:
-        integral_lab_a = _integral_image(lab_a, sq=False)
-        integral_lab_b = _integral_image(lab_b, sq=False)
         features_list.append(_calculate_color_vector(
-            integral_lab_a,
-            integral_lab_b,
+            lab_a,
+            lab_b,
             partition_level,
             (x_size, y_size),
         ))
@@ -1525,9 +1564,228 @@ def _level_intensities(
     features = p.where(areas_gpu > 0, sums / safe_areas, 0)
     return p.asarray(features, dtype=num_dtype).reshape(-1)
 
+def _color_level_means_gpu(
+    image: cpImageArray,
+    partition_level: int,
+    image_size: tuple[int, int],
+) -> cpImageArray:
+    """Средние по регионам одного уровня на GPU."""
+    x_points, y_points = _grid_points(
+        image_size[0], image_size[1], partition_level
+    )
+    sums = cp.add.reduceat(
+        cp.add.reduceat(image, y_points[:-1], axis=0),
+        x_points[:-1],
+        axis=1,
+    )
+    areas = cp.asarray(
+        (np.diff(y_points)[:, None] * np.diff(x_points)[None, :]),
+        dtype=num_dtype,
+    )
+    safe_areas = cp.where(areas > 0, areas, 1)
+    means = cp.where(areas > 0, sums / safe_areas, 0)
+    return cp.asarray(means, dtype=num_dtype).reshape(-1)
+
+def _color_level_means_vips(
+    image: npImageArray,
+    partition_level: int,
+    image_size: tuple[int, int],
+) -> npImageArray:
+    """Средние по регионам одного уровня средствами libvips.
+
+    libvips не умеет интегральные изображения, но shrink() считает
+    средние по целочисленным блокам. Вызывается только при делимости
+    размера изображения на уровень разбиения.
+    """
+    factor_x = image_size[0] // partition_level
+    factor_y = image_size[1] // partition_level
+    shrunk = pyvips.Image.new_from_array(image).shrink(factor_x, factor_y)
+    return shrunk.numpy(dtype=num_dtype).reshape(-1)
+
+def _color_level_means_custom(
+    image: npImageArray,
+    partition_level: int,
+    image_size: tuple[int, int],
+) -> npImageArray:
+    """Средние по регионам одного уровня средствами NumPy."""
+    x_points, y_points = _grid_points(
+        image_size[0], image_size[1], partition_level
+    )
+    sums = np.add.reduceat(
+        np.add.reduceat(image, y_points[:-1], axis=0),
+        x_points[:-1],
+        axis=1,
+    )
+    areas = (
+        np.diff(y_points)[:, None] * np.diff(x_points)[None, :]
+    ).astype(num_dtype)
+    safe_areas = np.where(areas > 0, areas, 1)
+    means = np.where(areas > 0, sums / safe_areas, 0)
+    return np.asarray(means, dtype=num_dtype).reshape(-1)
+
+def _color_region_means_from_integrals(
+    integral_a: npIntegralImageArray,
+    integral_b: npIntegralImageArray,
+    partition_level: int,
+    image_size: tuple[int, int],
+) -> tuple[Vector, Vector]:
+    """Средние a и b по регионам из готовых интегральных изображений."""
+    size = sum(level ** 2 for level in range(1, partition_level + 1))
+    a_features = np.empty(size, dtype=num_dtype)
+    b_features = np.empty(size, dtype=num_dtype)
+    features_idx = 0
+    for current_level in range(1, partition_level + 1):
+        part_size = (
+            image_size[0] / current_level,
+            image_size[1] / current_level,
+        )
+        a_part = _level_intensities(
+            integral_a, current_level, image_size, part_size
+        )
+        b_part = _level_intensities(
+            integral_b, current_level, image_size, part_size
+        )
+        a_features[features_idx:features_idx + a_part.size] = a_part
+        b_features[features_idx:features_idx + b_part.size] = b_part
+        features_idx += a_part.size
+    return a_features, b_features
+
+def _color_region_means_cv(
+    lab_a: npImageArray,
+    lab_b: npImageArray,
+    partition_level: int,
+    image_size: tuple[int, int],
+) -> tuple[Vector, Vector]:
+    """Средние по регионам средствами OpenCV.
+
+    Для всех уровней достаточно двух интегральных изображений: извлечение
+    средних из готового интеграла дешевле повторных resize с INTER_AREA.
+    """
+    integral_a = _integral_image_cv(lab_a, sq=False)
+    integral_b = _integral_image_cv(lab_b, sq=False)
+    return _color_region_means_from_integrals(
+        integral_a, integral_b, partition_level, image_size
+    )
+
+def _color_region_means_custom(
+    lab_a: npImageArray,
+    lab_b: npImageArray,
+    partition_level: int,
+    image_size: tuple[int, int],
+) -> tuple[Vector, Vector]:
+    """Средние по регионам средствами NumPy."""
+    if partition_level > COLOR_REDUCEAT_MAX_LEVEL:
+        integral_a = _integral_image_custom(lab_a, sq=False)
+        integral_b = _integral_image_custom(lab_b, sq=False)
+        return _color_region_means_from_integrals(
+            integral_a, integral_b, partition_level, image_size
+        )
+
+    size = sum(level ** 2 for level in range(1, partition_level + 1))
+    a_features = np.empty(size, dtype=num_dtype)
+    b_features = np.empty(size, dtype=num_dtype)
+    features_idx = 0
+    for current_level in range(1, partition_level + 1):
+        a_part = _color_level_means_custom(
+            lab_a, current_level, image_size
+        )
+        b_part = _color_level_means_custom(
+            lab_b, current_level, image_size
+        )
+        a_features[features_idx:features_idx + a_part.size] = a_part
+        b_features[features_idx:features_idx + b_part.size] = b_part
+        features_idx += a_part.size
+    return a_features, b_features
+
+def _color_region_means_vips(
+    lab_a: npImageArray,
+    lab_b: npImageArray,
+    partition_level: int,
+    image_size: tuple[int, int],
+) -> tuple[Vector, Vector]:
+    """Средние по регионам средствами libvips.
+
+    shrink() быстрее NumPy только для целочисленных делителей размера,
+    поэтому на неделимых уровнях используется reduceat. Для больших
+    уровней разбиения выгоднее один раз посчитать интегралы.
+    """
+    if partition_level > 8:
+        return _color_region_means_custom(
+            lab_a, lab_b, partition_level, image_size
+        )
+
+    size = sum(level ** 2 for level in range(1, partition_level + 1))
+    a_features = np.empty(size, dtype=num_dtype)
+    b_features = np.empty(size, dtype=num_dtype)
+    features_idx = 0
+    for current_level in range(1, partition_level + 1):
+        if (
+            image_size[0] % current_level == 0
+            and image_size[1] % current_level == 0
+        ):
+            means_function = _color_level_means_vips
+        else:
+            means_function = _color_level_means_custom
+        a_part = means_function(lab_a, current_level, image_size)
+        b_part = means_function(lab_b, current_level, image_size)
+        a_features[features_idx:features_idx + a_part.size] = a_part
+        b_features[features_idx:features_idx + b_part.size] = b_part
+        features_idx += a_part.size
+    return a_features, b_features
+
+def _color_region_means_gpu(
+    lab_a: cpImageArray,
+    lab_b: cpImageArray,
+    partition_level: int,
+    image_size: tuple[int, int],
+) -> tuple[Vector, Vector]:
+    """Средние по регионам на GPU с переносом только результата.
+
+    Сборка вектора выполняется на NumPy: на GPU она оказалась медленнее
+    из-за большого числа мелких операций.
+    """
+    size = sum(level ** 2 for level in range(1, partition_level + 1))
+    a_features = cp.empty(size, dtype=num_dtype)
+    b_features = cp.empty(size, dtype=num_dtype)
+    features_idx = 0
+    for current_level in range(1, partition_level + 1):
+        a_part = _color_level_means_gpu(
+            lab_a, current_level, image_size
+        )
+        b_part = _color_level_means_gpu(
+            lab_b, current_level, image_size
+        )
+        a_features[features_idx:features_idx + a_part.size] = a_part
+        b_features[features_idx:features_idx + b_part.size] = b_part
+        features_idx += a_part.size
+    return from_gpu(a_features), from_gpu(b_features)
+
+def _color_region_means(
+    lab_a: npImageArray | cpImageArray,
+    lab_b: npImageArray | cpImageArray,
+    partition_level: int,
+    image_size: tuple[int, int],
+) -> tuple[Vector, Vector]:
+    """Средние a и b по регионам всех уровней разбиения."""
+    if _is_cupy_array(lab_a):
+        return _color_region_means_gpu(
+            lab_a, lab_b, partition_level, image_size
+        )
+    if CV2_AVAILABLE:
+        return _color_region_means_cv(
+            lab_a, lab_b, partition_level, image_size
+        )
+    if VIPS_AVAILABLE:
+        return _color_region_means_vips(
+            lab_a, lab_b, partition_level, image_size
+        )
+    return _color_region_means_custom(
+        lab_a, lab_b, partition_level, image_size
+    )
+
 def _calculate_color_vector(
-    integral_a: npIntegralImageArray | cpIntegralImageArray,
-    integral_b: npIntegralImageArray | cpIntegralImageArray,
+    lab_a: npImageArray | cpImageArray,
+    lab_b: npImageArray | cpImageArray,
     partition_level: int,
     image_size: tuple[int, int],
 ) -> Vector:
@@ -1538,45 +1796,20 @@ def _calculate_color_vector(
     Все значения лежат в 0…1. Нейтральная опора не даёт почти серым
     изображениям и мелким цветным меткам давать большое расстояние.
     """
-    p = cp if _is_cupy_array(integral_a) else np
-    x_size, y_size = image_size
-    size = sum(level ** 2 for level in range(1, partition_level + 1))
-    a_features = p.empty(size, dtype=num_dtype)
-    b_features = p.empty(size, dtype=num_dtype)
-    features_idx = 0
-
-    for current_partition_level in range(1, partition_level + 1):
-        part_size = (
-            x_size / current_partition_level,
-            y_size / current_partition_level
-        )
-        a_part = _level_intensities(
-            integral_a,
-            current_partition_level,
-            image_size,
-            part_size,
-        )
-        b_part = _level_intensities(
-            integral_b,
-            current_partition_level,
-            image_size,
-            part_size,
-        )
-        a_features[features_idx:features_idx + a_part.size] = a_part
-        b_features[features_idx:features_idx + b_part.size] = b_part
-        features_idx += a_part.size
-
-    a_scaled = p.clip(a_features / COLOR_AB_SCALE, -1.0, 1.0)
-    b_scaled = p.clip(b_features / COLOR_AB_SCALE, -1.0, 1.0)
-    neutral = p.full(size, COLOR_NEUTRAL, dtype=num_dtype)
-    color = p.concatenate((
+    a_features, b_features = _color_region_means(
+        lab_a, lab_b, partition_level, image_size
+    )
+    size = a_features.size
+    a_scaled = np.clip(a_features / COLOR_AB_SCALE, -1.0, 1.0)
+    b_scaled = np.clip(b_features / COLOR_AB_SCALE, -1.0, 1.0)
+    neutral = np.full(size, COLOR_NEUTRAL, dtype=num_dtype)
+    return np.concatenate((
         neutral,
-        p.maximum(a_scaled, 0.0),
-        p.maximum(-a_scaled, 0.0),
-        p.maximum(b_scaled, 0.0),
-        p.maximum(-b_scaled, 0.0),
+        np.maximum(a_scaled, 0.0),
+        np.maximum(-a_scaled, 0.0),
+        np.maximum(b_scaled, 0.0),
+        np.maximum(-b_scaled, 0.0),
     ))
-    return from_gpu(color)
 
 def _calculate_features_sq(
     integral: npIntegralImageArray | cpIntegralImageArray,

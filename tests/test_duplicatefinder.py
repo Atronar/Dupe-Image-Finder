@@ -374,6 +374,64 @@ def test_ab_backends_agree(df, color_png: Path) -> None:
         )
 
 
+def test_color_presence_backends_agree(df, color_png: Path) -> None:
+    """Цветовая доля не должна зависеть от выбранного бэкенда."""
+    image = df.open_image(str(color_png))
+    lab_a, lab_b = df._get_ab_from_BGR(image)
+    reference = df._color_presence_custom(lab_a, lab_b)
+
+    if df.CV2_AVAILABLE:
+        np.testing.assert_allclose(
+            df._color_presence_cv(lab_a, lab_b),
+            reference,
+            atol=1e-5,
+            err_msg="цветовая доля, бэкенд OpenCV",
+        )
+    if df._is_gpu_available():
+        gpu_a, gpu_b = df.to_gpu(lab_a), df.to_gpu(lab_b)
+        np.testing.assert_allclose(
+            df._color_presence_gpu(gpu_a, gpu_b),
+            reference,
+            atol=1e-5,
+            err_msg="цветовая доля, бэкенд CuPy",
+        )
+
+
+def test_color_region_means_backends_agree(df, color_png: Path) -> None:
+    """Средние a/b по регионам должны совпадать у всех бэкендов."""
+    image = df.open_image(str(color_png))
+    lab_a, lab_b = df._get_ab_from_BGR(image)
+    image_size = (image.shape[1], image.shape[0])
+
+    for level in (2, 8):
+        reference_a, reference_b = df._color_region_means_custom(
+            lab_a, lab_b, level, image_size
+        )
+        backends = []
+        if df.CV2_AVAILABLE:
+            backends.append(("OpenCV", df._color_region_means_cv))
+        if df.VIPS_AVAILABLE:
+            backends.append(("pyvips", df._color_region_means_vips))
+        if df._is_gpu_available():
+            backends.append((
+                "CuPy",
+                lambda a, b, level, size: df._color_region_means_gpu(
+                    df.to_gpu(a), df.to_gpu(b), level, size
+                ),
+            ))
+
+        for name, backend in backends:
+            actual_a, actual_b = backend(lab_a, lab_b, level, image_size)
+            np.testing.assert_allclose(
+                actual_a, reference_a, atol=0.05,
+                err_msg=f"канал a, level={level}, бэкенд {name}",
+            )
+            np.testing.assert_allclose(
+                actual_b, reference_b, atol=0.05,
+                err_msg=f"канал b, level={level}, бэкенд {name}",
+            )
+
+
 def test_intensities_iter_preserves_parameter_names(df, color_png: Path, gray_png: Path) -> None:
     """intensities_iter должен передавать параметры по именам, а не по порядку словаря."""
     images = [str(color_png), str(gray_png)]
