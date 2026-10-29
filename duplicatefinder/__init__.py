@@ -12,7 +12,7 @@ is_similar_images() и is_similar()
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
-from typing import Any, BinaryIO, Generator, Iterable, Literal, TYPE_CHECKING, overload
+from typing import Any, BinaryIO, Generator, Iterable, Literal, TYPE_CHECKING, TypeGuard, cast, overload
 from io import IOBase, TextIOBase
 import hashlib
 import numpy as np
@@ -214,7 +214,7 @@ def to_gpu(arr: npImageArray) -> npImageArray | cpImageArray:
     except Exception:
         return arr
 
-def _is_cupy_array(arr: object) -> bool:
+def _is_cupy_array(arr: object) -> TypeGuard[cpImageArray]:
     """Проверяет, что массив является массивом CuPy.
 
     Проверка безопасна и при отсутствии CuPy: имя cp в этом случае
@@ -225,7 +225,7 @@ def _is_cupy_array(arr: object) -> bool:
 def from_gpu(arr: npImageArray | cpImageArray) -> npImageArray:
     return cp.asnumpy(arr) if _is_cupy_array(arr) else arr
 
-def _is_binary_file_like(obj: object) -> bool:
+def _is_binary_file_like(obj: object) -> TypeGuard[BinaryIO]:
     """Проверяет, что объект является бинарным файловым объектом.
 
     typing.BinaryIO нельзя использовать в isinstance: это только
@@ -247,7 +247,7 @@ def _check_image_source(source: str | Path | BinaryIO) -> None:
     """
     if _is_binary_file_like(source):
         return
-    path = Path(source)
+    path = Path(cast(str | Path, source))
     if not path.exists():
         raise FileNotFoundError(f"Файл не найден: {path}")
     if not path.is_file():
@@ -293,13 +293,14 @@ def _read_image_header(source: str | Path | BinaryIO, size: int = 262144) -> byt
             return source.read(size)
         finally:
             source.seek(position)
-    with open(source, "rb") as image_file:
+    with open(cast(str | Path, source), "rb") as image_file:
         return image_file.read(size)
 
 def _get_exif_orientation_tiff(tiff: bytes) -> int:
     """Возвращает Orientation (тег 0x0112) из TIFF/EXIF-блока."""
     if len(tiff) < 8:
         return 1
+    byte_order: Literal["little", "big"]
     if tiff[:2] == b"II":
         byte_order = "little"
     elif tiff[:2] == b"MM":
@@ -485,9 +486,9 @@ def open_image_vips(
                 "pyvips не смог декодировать изображение "
                 f"{_describe_image_source(image_path)}"
             )
-        image: pyvips.Image = img[0]
+        image = img[0]
     else:
-        image: pyvips.Image = img
+        image = img
     del img
 
     # libvips умеет применять EXIF-ориентацию самостоятельно.
@@ -545,10 +546,10 @@ def open_image_cv(image_path: str|Path|BinaryIO) -> npImageArray:
             np_array = np.frombuffer(image_data, dtype=np.uint8)
             img = cv2.imdecode(np_array, flags)
         else:
-            image_path = Path(image_path).absolute()
-            img = cv2.imread(str(image_path), flags)
+            image_path_obj = Path(cast(str | Path, image_path)).absolute()
+            img = cv2.imread(str(image_path_obj), flags)
             if img is None:
-                with open(image_path, "rb") as image_file:
+                with open(image_path_obj, "rb") as image_file:
                     return load_image(image_file, flags)
         if img is None:
             raise ImageDecodeError(
@@ -596,7 +597,7 @@ def open_image_cv(image_path: str|Path|BinaryIO) -> npImageArray:
     alpha = img[..., -1][..., np.newaxis] / 255.0
     color = img[..., :-1]
     if is_grayscale:
-        white = 255
+        white: float | npImageArray = 255
     else:
         white = np.array([255.0, 255.0, 255.0], dtype=num_dtype)
     image = color * alpha + white * (1 - alpha)
@@ -857,7 +858,7 @@ def _gauss_blur_gpu(
     # Для цветного изображения ось каналов размывать нельзя: иначе
     # gaussian_filter смешивает B, G и R между собой.
     if image.ndim == 3:
-        sigmas = (sigma_y, sigma_x, 0)
+        sigmas: tuple[float, ...] = (sigma_y, sigma_x, 0)
     else:
         sigmas = (sigma_y, sigma_x)
 
@@ -961,10 +962,15 @@ def _integral_image(
     кумулятивная сумма по каждому измерению
     """
     if CUPY_AVAILABLE and isinstance(image, cp.ndarray):
-        return _integral_image_gpu(image, sq=sq)
+        return _integral_image_gpu(cast(cpImageArray, image), sq=sq)
+    image_cpu = cast(npImageArray, image)
+    if sq:
+        if CV2_AVAILABLE:
+            return _integral_image_cv(image_cpu, sq=True)
+        return _integral_image_custom(image_cpu, sq=True)
     if CV2_AVAILABLE:
-        return _integral_image_cv(image, sq=sq)
-    return _integral_image_custom(image, sq=sq)
+        return _integral_image_cv(image_cpu, sq=False)
+    return _integral_image_custom(image_cpu, sq=False)
 
 @overload
 def _integral_image_cv(
@@ -1044,7 +1050,7 @@ def _integral_image_gpu(
         else cp.int64
     )
 
-    def get_integral(img: cpImageArray) -> cpIntegralImageArray:
+    def get_integral(img: npt.NDArray[Any]) -> cpIntegralImageArray:
         # Создаем нулевую рамку
         if img.ndim == 3:
             h, w, c = img.shape
@@ -1214,7 +1220,7 @@ def _sobel_custom(image: npImageArray, dx: int, dy: int) -> npImageArray:
     ) -> npImageArray:
         shape = list(image.shape) + [3,]
         shape[axis] -= 2
-        shape = tuple(shape)
+        window_shape = tuple(shape)
 
         # Вычисление strides вручную
         strides = (image.strides[0], image.strides[1], image.strides[axis])
@@ -1222,7 +1228,7 @@ def _sobel_custom(image: npImageArray, dx: int, dy: int) -> npImageArray:
         # Создание "окон" через as_strided
         windows = np.lib.stride_tricks.as_strided(
             image,
-            shape = shape,
+            shape = window_shape,
             strides = strides
         )
 
@@ -1462,11 +1468,11 @@ def _color_presence(
     цветовое пространство файла и не делая отдельный проход по пикселям:
     a и b уже получены при преобразовании в Lab.
     """
-    if _is_cupy_array(lab_a):
+    if _is_cupy_array(lab_a) and _is_cupy_array(lab_b):
         return _color_presence_gpu(lab_a, lab_b)
     if CV2_AVAILABLE:
-        return _color_presence_cv(lab_a, lab_b)
-    return _color_presence_custom(lab_a, lab_b)
+        return _color_presence_cv(cast(npImageArray, lab_a), cast(npImageArray, lab_b))
+    return _color_presence_custom(cast(npImageArray, lab_a), cast(npImageArray, lab_b))
 
 def _neutral_color_vector(partition_level: int) -> Vector:
     """Нейтральный цветовой вектор для серого изображения."""
@@ -1608,9 +1614,11 @@ def _process_calculate_features(
     Обёртка для _level_intensities()
     '''
     if len(args[0]) == 2:
-        return _calculate_features_sq(*(args[0]), *(args[1:]))
+        return _calculate_features_sq(
+            args[0][0], args[0][1], args[1], args[2], args[3]
+        )
     else:
-        return _calculate_features(args[0][0], *(args[1:]))
+        return _calculate_features(args[0][0], args[1], args[2], args[3])
 
 def _calculate_features(
     integral: npIntegralImageArray | cpIntegralImageArray,
@@ -1647,22 +1655,6 @@ def _calculate_features(
 
     return from_gpu(features)
 
-@overload
-def _level_intensities(
-    integral: npIntegralImageArray,
-    current_partition_level: int,
-    image_size: tuple[int, int],
-    part_size: tuple[float, float] | None = None,
-    use_threads: bool = True
-) -> npImageArray: ...
-@overload
-def _level_intensities(
-    integral: cpIntegralImageArray,
-    current_partition_level: int,
-    image_size: tuple[int, int],
-    part_size: tuple[float, float] | None = None,
-    use_threads: bool = True
-) -> cpImageArray: ...
 def _grid_points(
     x_size: int,
     y_size: int,
@@ -1686,7 +1678,22 @@ def _grid_points(
     y_points[-1] = y_size
     return x_points, y_points
 
-
+@overload
+def _level_intensities(
+    integral: npIntegralImageArray,
+    current_partition_level: int,
+    image_size: tuple[int, int],
+    part_size: tuple[float, float] | None = None,
+    use_threads: bool = True
+) -> npImageArray: ...
+@overload
+def _level_intensities(
+    integral: cpIntegralImageArray,
+    current_partition_level: int,
+    image_size: tuple[int, int],
+    part_size: tuple[float, float] | None = None,
+    use_threads: bool = True
+) -> cpImageArray: ...
 def _level_intensities(
     integral: npIntegralImageArray | cpIntegralImageArray,
     current_partition_level: int,
@@ -1924,20 +1931,22 @@ def _color_region_means(
     image_size: tuple[int, int],
 ) -> tuple[Vector, Vector]:
     """Средние a и b по регионам всех уровней разбиения."""
-    if _is_cupy_array(lab_a):
+    if _is_cupy_array(lab_a) and _is_cupy_array(lab_b):
         return _color_region_means_gpu(
             lab_a, lab_b, partition_level, image_size
         )
+    lab_a_cpu = cast(npImageArray, lab_a)
+    lab_b_cpu = cast(npImageArray, lab_b)
     if CV2_AVAILABLE:
         return _color_region_means_cv(
-            lab_a, lab_b, partition_level, image_size
+            lab_a_cpu, lab_b_cpu, partition_level, image_size
         )
     if VIPS_AVAILABLE:
         return _color_region_means_vips(
-            lab_a, lab_b, partition_level, image_size
+            lab_a_cpu, lab_b_cpu, partition_level, image_size
         )
     return _color_region_means_custom(
-        lab_a, lab_b, partition_level, image_size
+        lab_a_cpu, lab_b_cpu, partition_level, image_size
     )
 
 def _calculate_color_vector(
