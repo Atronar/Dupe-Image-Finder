@@ -702,10 +702,17 @@ def _gauss_blur_vips(
             "Необходимо использовать функцию gauss_blur()"
         )
 
-    if isinstance(blur_ksize, tuple):
-        blur_ksize = min(blur_ksize)
-    if not blur_ksize:
+    if isinstance(blur_ksize, int):
+        kx = ky = blur_ksize
+    else:
+        kx, ky = blur_ksize
+    if not kx or not ky:
         return image
+    if kx != ky:
+        # gaussblur в libvips изотропен и не умеет разные sigma по осям,
+        # поэтому неквадратное ядро считается собственной реализацией.
+        return _gauss_blur_custom(image, (kx, ky), sigma)
+    blur_ksize = kx
 
     if np.isclose(sigma, 0):
         sigma = 0.15 * blur_ksize + 0.35

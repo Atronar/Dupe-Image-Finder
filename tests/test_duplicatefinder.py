@@ -866,6 +866,19 @@ def test_gauss_blur_custom_matches_opencv_for_non_square_kernel(df) -> None:
     np.testing.assert_allclose(actual, expected, atol=1e-4)
 
 
+def test_gauss_blur_vips_falls_back_for_non_square_kernel(df) -> None:
+    """libvips не умеет разные sigma по осям, поэтому используется NumPy."""
+    if not df.VIPS_AVAILABLE:
+        pytest.skip("pyvips не установлен")
+    rng = np.random.default_rng(2)
+    image = rng.random((32, 40, 3), dtype=np.float32) * 255.0
+
+    actual = df._gauss_blur_vips(image, (5, 3), sigma=1.2)
+    expected = df._gauss_blur_custom(image, (5, 3), sigma=1.2)
+
+    np.testing.assert_allclose(actual, expected)
+
+
 def test_similarity_rejects_different_shapes(df) -> None:
     with pytest.raises(ValueError):
         df.similarity(np.zeros(3, dtype=np.float32), np.zeros(4, dtype=np.float32))
