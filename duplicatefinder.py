@@ -82,6 +82,21 @@ COLOR_PRESENCE_SCALE = 6.0
 # выше — выгоднее один раз посчитать интегралы.
 COLOR_REDUCEAT_MAX_LEVEL = 4
 
+# Таблица sRGB → линейный свет для NumPy-пути Lab. Шаг 1/16 по шкале
+# 0…255 даёт погрешность меньше 0.001 в линейном значении, а таблица
+# целиком помещается в кэш процессора. Значения берутся на середине
+# интервала, поэтому усечение индекса не даёт систематического сдвига.
+_SRGB_LUT_SCALE = 16.0
+_SRGB_LUT_SIZE = int(255 * _SRGB_LUT_SCALE) + 1
+_SRGB_LUT_VALUES = (
+    np.arange(_SRGB_LUT_SIZE, dtype=num_dtype) + 0.5
+) / (255.0 * _SRGB_LUT_SCALE)
+_SRGB_TO_LINEAR_LUT = np.where(
+    _SRGB_LUT_VALUES <= 0.04045,
+    _SRGB_LUT_VALUES / 12.92,
+    ((_SRGB_LUT_VALUES + 0.055) / 1.055) ** 2.4,
+).astype(num_dtype)
+
 # Результат проверки CUDA кэшируется: при отсутствии драйвера или устройства
 # каждая попытка инициализации CuPy может занимать заметное время.
 _gpu_available: bool | None = None
@@ -1223,25 +1238,27 @@ def _get_ab_from_BGR_gpu(image: cpImageArray) -> tuple[cpImageArray, cpImageArra
     return a, b
 
 def _get_ab_from_BGR_custom(image: npImageArray) -> tuple[npImageArray, npImageArray]:
-    # Нормализация BGR [0, 255] → [0, 1]
-    bgr = image.astype(num_dtype, copy=False) / 255.0
+    # Обратная гамма-коррекция берётся из таблицы: степень на каждом
+    # пикселе заметно дороже. Масштаб переводит диапазон 0…255 сразу
+    # в индексы таблицы, поэтому отдельная нормировка не нужна.
+    indices = (
+        np.asarray(image, dtype=num_dtype) * _SRGB_LUT_SCALE
+    ).astype(np.int32)
+    np.clip(indices, 0, _SRGB_LUT_SIZE - 1, out=indices)
+    bgr = _SRGB_TO_LINEAR_LUT[indices]
 
-    # Обратная гамма-коррекция sBGR → линейный BGR
-    bgr = np.where(bgr <= 0.04045, bgr / 12.92, ((bgr + 0.055) / 1.055) ** 2.4)
-
-    # BGR → XYZ (матричное преобразование)
+    # BGR → XYZ. Белая точка D65 внесена в матрицу, чтобы не делать
+    # отдельный проход по изображению. Оператор @ для последней оси
+    # в разы быстрее np.dot на массиве H×W×3.
     mat = np.array(
         #       X       Y       Z
         [[0.180423, 0.072169, 0.950227], # B
         [0.35758 , 0.71516 , 0.119193], # G
         [0.412453, 0.212671, 0.019334]], # R
         dtype = num_dtype
-    )
+    ) / np.array([0.950456, 1.0, 1.088754], dtype=num_dtype)
 
-    xyz = np.dot(bgr, mat)
-
-    # Нормализация XYZ относительно D65 (стандартная белая точка)
-    xyz /= np.array([0.950456, 1.0, 1.088754])
+    xyz = bgr @ mat
 
     # XYZ → Lab
     delta = 6/29

@@ -374,6 +374,42 @@ def test_ab_backends_agree(df, color_png: Path) -> None:
         )
 
 
+def test_custom_lab_lut_is_accurate(df, color_png: Path) -> None:
+    """Таблица sRGB→linear не должна заметно менять Lab."""
+    image = df.open_image(str(color_png))
+
+    # Прямой расчёт по формуле — эталон для табличного пути.
+    bgr = image.astype(df.num_dtype, copy=False) / 255.0
+    linear = np.where(
+        bgr <= 0.04045,
+        bgr / 12.92,
+        ((bgr + 0.055) / 1.055) ** 2.4,
+    )
+    mat = np.array(
+        [[0.180423, 0.072169, 0.950227],
+         [0.35758, 0.71516, 0.119193],
+         [0.412453, 0.212671, 0.019334]],
+        dtype=df.num_dtype,
+    ) / np.array([0.950456, 1.0, 1.088754], dtype=df.num_dtype)
+    xyz = np.dot(linear, mat)
+    delta3 = (6 / 29) ** 3
+
+    def f(values: np.ndarray) -> np.ndarray:
+        return np.where(
+            values > delta3,
+            values ** (1 / 3),
+            (24389 * values + 432) / 3132,
+        )
+
+    fx, fy, fz = f(xyz[..., 0]), f(xyz[..., 1]), f(xyz[..., 2])
+    expected_a = 500 * (fx - fy)
+    expected_b = 200 * (fy - fz)
+
+    actual_a, actual_b = df._get_ab_from_BGR_custom(image)
+    np.testing.assert_allclose(actual_a, expected_a, atol=0.1)
+    np.testing.assert_allclose(actual_b, expected_b, atol=0.1)
+
+
 def test_color_presence_backends_agree(df, color_png: Path) -> None:
     """Цветовая доля не должна зависеть от выбранного бэкенда."""
     image = df.open_image(str(color_png))
