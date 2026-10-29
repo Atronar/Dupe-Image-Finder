@@ -93,25 +93,19 @@ def color_pipeline(
         image = df.open_image_cv(str(image_path))
         image = df._gauss_blur_cv(image, (3, 3))
         lab_a, lab_b = df._get_ab_from_BGR_cv(image)
-        integral_a = df._integral_image_cv(lab_a, sq=False)
-        integral_b = df._integral_image_cv(lab_b, sq=False)
     elif profile == "vips":
         image = df.open_image_vips(str(image_path))
         image = df._gauss_blur_vips(image, (3, 3))
         lab_a, lab_b = df._get_ab_from_BGR_vips(image)
-        integral_a = df._integral_image_custom(lab_a, sq=False)
-        integral_b = df._integral_image_custom(lab_b, sq=False)
     else:
-        # У Pillow нет ни размытия, ни интегральных изображений,
-        # поэтому в этом профиле он отвечает только за декодирование.
+        # У Pillow нет ни размытия, ни Lab, поэтому в этом профиле он
+        # отвечает только за декодирование, остальное делает NumPy.
         image = df.open_image_pil(str(image_path))
         image = df._gauss_blur_custom(image, (3, 3))
         lab_a, lab_b = df._get_ab_from_BGR_custom(image)
-        integral_a = df._integral_image_custom(lab_a, sq=False)
-        integral_b = df._integral_image_custom(lab_b, sq=False)
     df._color_presence(lab_a, lab_b)
     return df._calculate_color_vector(
-        integral_a, integral_b, level, image_size
+        lab_a, lab_b, level, image_size
     )
 
 
@@ -125,10 +119,8 @@ def color_pipeline_gpu(
     image_gpu = df._gauss_blur_gpu(image_gpu, (3, 3))
     lab_a, lab_b = df._get_ab_from_BGR_gpu(image_gpu)
     df._color_presence(lab_a, lab_b)
-    integral_a = df._integral_image_gpu(lab_a, sq=False)
-    integral_b = df._integral_image_gpu(lab_b, sq=False)
     return df._calculate_color_vector(
-        integral_a, integral_b, level, image_size
+        lab_a, lab_b, level, image_size
     )
 
 
@@ -205,12 +197,46 @@ def benchmark_size(size: int, temp_dir: Path) -> None:
         )
         print(name, format_time(measure(function)), f"maxdiff={difference:.2f}")
 
-    print("\n-- цветовая доля --")
-    print("presence_numpy ", format_time(
-        measure(lambda: df._color_presence(reference_a, reference_b))
-    ))
+    image_size = (size, size)
 
-    print("\n-- интеграл одного канала --")
+    print("\n-- цветовая доля --")
+    presence_backends = [("presence_numpy ", df._color_presence_custom)]
+    if df.CV2_AVAILABLE:
+        presence_backends.append(("presence_cv    ", df._color_presence_cv))
+    for name, function in presence_backends:
+        print(name, format_time(
+            measure(lambda function=function: function(
+                reference_a, reference_b
+            ))
+        ))
+
+    print("\n-- региональные средние, два канала --")
+    for level in (2, 4, 8):
+        if df.CV2_AVAILABLE:
+            print(f"cv     level={level}", format_time(
+                measure(
+                    lambda level=level: df._color_region_means_cv(
+                        reference_a, reference_b, level, image_size
+                    )
+                )
+            ))
+        print(f"custom level={level}", format_time(
+            measure(
+                lambda level=level: df._color_region_means_custom(
+                    reference_a, reference_b, level, image_size
+                )
+            )
+        ))
+        if df.VIPS_AVAILABLE:
+            print(f"vips   level={level}", format_time(
+                measure(
+                    lambda level=level: df._color_region_means_vips(
+                        reference_a, reference_b, level, image_size
+                    )
+                )
+            ))
+
+    print("\n-- интеграл одного канала (для яркости/контраста/текстуры) --")
     if df.CV2_AVAILABLE:
         print("integral_cv    ", format_time(
             measure(lambda: df._integral_image_cv(reference_a, sq=False))
@@ -220,14 +246,11 @@ def benchmark_size(size: int, temp_dir: Path) -> None:
     ))
 
     print("\n-- цветовой вектор, NumPy --")
-    integral_a = df._integral_image(reference_a, sq=False)
-    integral_b = df._integral_image(reference_b, sq=False)
-    image_size = (size, size)
     for level in (2, 4, 8):
         print(f"level={level}         ", format_time(
             measure(
                 lambda level=level: df._calculate_color_vector(
-                    integral_a, integral_b, level, image_size
+                    reference_a, reference_b, level, image_size
                 )
             )
         ))
@@ -254,8 +277,6 @@ def benchmark_gpu(
     print("\n-- GPU: отдельные операции --")
     image_gpu = df.to_gpu(image)
     lab_a, lab_b = df._get_ab_from_BGR_gpu(image_gpu)
-    integral_a_gpu = df._integral_image_gpu(lab_a, sq=False)
-    integral_b_gpu = df._integral_image_gpu(lab_b, sq=False)
 
     print("to_gpu         ", format_time(
         measure(lambda: df.to_gpu(image), gpu=True)
@@ -269,19 +290,24 @@ def benchmark_gpu(
     print("presence_gpu   ", format_time(
         measure(lambda: df._color_presence(lab_a, lab_b), gpu=True)
     ))
-    print("integral_gpu   ", format_time(
-        measure(
-            lambda: df._integral_image_gpu(lab_a, sq=False),
-            gpu=True,
-        )
-    ))
+
+    print("\n-- GPU: региональные средние --")
+    for level in (2, 4, 8):
+        print(f"level={level}         ", format_time(
+            measure(
+                lambda level=level: df._color_region_means_gpu(
+                    lab_a, lab_b, level, image_size
+                ),
+                gpu=True,
+            )
+        ))
 
     print("\n-- GPU: цветовой вектор --")
     for level in (2, 4, 8):
         print(f"level={level}         ", format_time(
             measure(
                 lambda level=level: df._calculate_color_vector(
-                    integral_a_gpu, integral_b_gpu, level, image_size
+                    lab_a, lab_b, level, image_size
                 ),
                 gpu=True,
             )
