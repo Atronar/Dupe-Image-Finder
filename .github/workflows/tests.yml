@@ -1,0 +1,35 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: минимальный набор
+            packages: ""
+          - name: Pillow
+            packages: "pillow>=10"
+          - name: OpenCV
+            packages: "opencv-python-headless>=4.8"
+          - name: все декодеры
+            packages: "pillow>=10 opencv-python-headless>=4.8 pyvips-binary>=2.2"
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Установка зависимостей
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest pyflakes ${{ matrix.packages }}
+      - name: Проверка стиля
+        run: python -m pyflakes duplicatefinder.py benchmarks tests
+      - name: Тесты
+        run: python -m pytest -q
