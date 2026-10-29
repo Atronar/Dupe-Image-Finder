@@ -131,7 +131,7 @@ def _assert_vectors(result, partition_level: int = 2) -> None:
 
     color = vectors[-1]
     assert color.ndim == 1
-    assert color.size == 2 * expected_size + 1
+    assert color.size == 5 * expected_size
     assert np.isfinite(color).all()
     assert np.all(color >= 0.0)
     assert np.all(color <= 1.0)
@@ -204,7 +204,7 @@ def test_intensities_without_opencv(
     )
     result = _run_without_modules(blocked, body)
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "4 (3,)"
+    assert result.stdout.strip() == "4 (5,)"
 
 
 def test_gpu_probe_handles_unavailable_cuda(df, monkeypatch) -> None:
@@ -285,12 +285,33 @@ def test_color_distance_distinguishes_color_and_gray(df, tmp_path: Path) -> None
         str(gray_path), partition_level=2, use_threads=False, use_gpu=False
     )
 
-    distance = df.similarity_color(color_vectors[-1], gray_vectors[-1])
+    distance = df.similarity(color_vectors[-1], gray_vectors[-1])
     assert distance > 0.5
     assert df.is_similar_images(
         str(color_path), str(gray_path),
         partition_level=2, use_threads=False, use_gpu=False,
     ) is False
+
+
+def test_similarity_images_uses_similarity_for_all_vectors(
+    df, color_png: Path, gray_png: Path
+) -> None:
+    """similarity_images должен оставаться обычным сравнением всех векторов."""
+    vectors1 = df.intensities(
+        str(color_png), partition_level=2, use_threads=False, use_gpu=False
+    )
+    vectors2 = df.intensities(
+        str(gray_png), partition_level=2, use_threads=False, use_gpu=False
+    )
+    expected = [
+        df.similarity(first, second)
+        for first, second in zip(vectors1, vectors2)
+    ]
+    actual = df.similarity_images(
+        str(color_png), str(gray_png),
+        partition_level=2, use_threads=False, use_gpu=False,
+    )
+    np.testing.assert_allclose(actual, expected)
 
 
 def test_color_distance_ignores_small_watermark(df, tmp_path: Path) -> None:
@@ -305,7 +326,7 @@ def test_color_distance_ignores_small_watermark(df, tmp_path: Path) -> None:
         str(watermark_path), partition_level=2, use_threads=False, use_gpu=False
     )
 
-    assert df.similarity_color(gray_vectors[-1], watermark_vectors[-1]) < 0.1
+    assert df.similarity(gray_vectors[-1], watermark_vectors[-1]) < 0.1
 
 
 def test_pseudogray_is_neutral(df, tmp_path: Path) -> None:
@@ -320,8 +341,7 @@ def test_pseudogray_is_neutral(df, tmp_path: Path) -> None:
         str(pseudo_path), partition_level=2, use_threads=False, use_gpu=False
     )
 
-    assert pseudo_vectors[-1][-1] < 0.01
-    assert df.similarity_color(gray_vectors[-1], pseudo_vectors[-1]) < 0.05
+    assert df.similarity(gray_vectors[-1], pseudo_vectors[-1]) < 0.05
 
 
 def test_ab_backends_agree(df, color_png: Path) -> None:

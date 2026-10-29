@@ -71,13 +71,12 @@ if CUPY_AVAILABLE:
     BGR_COEFFS_CUPY = cp.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
 BGR_COEFFS = np.array([0.072186, 0.715158, 0.212656], dtype=num_dtype)
 
-# Калибровка цветовой характеристики. Значения хранятся в векторе 0…1:
-# 0.5 — нейтральный a/b, последний элемент — доля визуально цветной площади.
-COLOR_AB_SCALE = 255.0
+# Калибровка цветовой характеристики. Цветовой вектор состоит из
+# нейтральной опоры и положительных/отрицательных частей a и b.
+COLOR_NEUTRAL = 0.12
+COLOR_AB_SCALE = 50.0
 COLOR_PRESENCE_NOISE = 2.0
 COLOR_PRESENCE_SCALE = 6.0
-COLOR_PRESENCE_AREA = 0.2
-COLOR_DENOMINATOR = 2.0
 
 # Результат проверки CUDA кэшируется: при отсутствии драйвера или устройства
 # каждая попытка инициализации CuPy может занимать заметное время.
@@ -1276,9 +1275,8 @@ def _neutral_color_vector(partition_level: int) -> Vector:
     """Нейтральный цветовой вектор для серого изображения."""
     size = sum(level ** 2 for level in range(1, partition_level + 1))
     return np.concatenate((
-        np.full(size, 0.5, dtype=num_dtype),
-        np.full(size, 0.5, dtype=num_dtype),
-        np.array([0.0], dtype=num_dtype),
+        np.full(size, COLOR_NEUTRAL, dtype=num_dtype),
+        np.zeros(4 * size, dtype=num_dtype),
     ))
 
 def intensities(
@@ -1395,7 +1393,6 @@ def intensities(
             integral_lab_b,
             partition_level,
             (x_size, y_size),
-            color_presence,
         ))
     else:
         features_list.append(_neutral_color_vector(partition_level))
@@ -1532,13 +1529,13 @@ def _calculate_color_vector(
     integral_b: npIntegralImageArray | cpIntegralImageArray,
     partition_level: int,
     image_size: tuple[int, int],
-    presence: float,
 ) -> Vector:
     """Строит нормированный цветовой вектор изображения.
 
-    Формат вектора: сначала средние a по регионам, затем средние b,
-    последним элементом — доля визуально цветной площади. Значения a и b
-    отображаются в 0…1 относительно нейтрали 0.5; presence тоже 0…1.
+    Формат: нейтральная опора по регионам, затем положительная и
+    отрицательная части a, затем положительная и отрицательная части b.
+    Все значения лежат в 0…1. Нейтральная опора не даёт почти серым
+    изображениям и мелким цветным меткам давать большое расстояние.
     """
     p = cp if _is_cupy_array(integral_a) else np
     x_size, y_size = image_size
@@ -1568,12 +1565,15 @@ def _calculate_color_vector(
         b_features[features_idx:features_idx + b_part.size] = b_part
         features_idx += a_part.size
 
-    a_norm = p.clip(0.5 + a_features / COLOR_AB_SCALE, 0.0, 1.0)
-    b_norm = p.clip(0.5 + b_features / COLOR_AB_SCALE, 0.0, 1.0)
+    a_scaled = p.clip(a_features / COLOR_AB_SCALE, -1.0, 1.0)
+    b_scaled = p.clip(b_features / COLOR_AB_SCALE, -1.0, 1.0)
+    neutral = p.full(size, COLOR_NEUTRAL, dtype=num_dtype)
     color = p.concatenate((
-        a_norm,
-        b_norm,
-        p.asarray([presence], dtype=num_dtype),
+        neutral,
+        p.maximum(a_scaled, 0.0),
+        p.maximum(-a_scaled, 0.0),
+        p.maximum(b_scaled, 0.0),
+        p.maximum(-b_scaled, 0.0),
     ))
     return from_gpu(color)
 
@@ -1837,55 +1837,6 @@ def is_similar(vector1: Vector, vector2: Vector, threshold: float=0.1) -> bool:
         raise ValueError("Порог должен быть конечным неотрицательным числом")
     return similarity(vector1,vector2) < threshold
 
-def similarity_color(
-    color_vector1: Vector | tuple | list,
-    color_vector2: Vector | tuple | list
-) -> float:
-    """Цветовое расстояние между нормированными цветовыми векторами.
-
-    Вектор имеет формат: средние a по регионам, средние b по регионам,
-    последний элемент — доля визуально цветной площади. Результат 0…1:
-    0 — цвет совпадает, 1 — максимальное различие.
-    """
-    vector1 = np.asarray(color_vector1, dtype=num_dtype)
-    vector2 = np.asarray(color_vector2, dtype=num_dtype)
-
-    if vector1.ndim != 1 or vector2.ndim != 1:
-        raise ValueError("Цветовые векторы должны быть одномерными")
-    if vector1.shape != vector2.shape:
-        raise ValueError(
-            f"Размеры цветовых векторов не совпадают: "
-            f"{vector1.shape} != {vector2.shape}"
-        )
-    if vector1.size < 3 or vector1.size % 2 == 0:
-        raise ValueError(
-            "Цветовой вектор должен содержать a, b и долю цветной площади"
-        )
-    if not np.isfinite(vector1).all() or not np.isfinite(vector2).all():
-        raise ValueError("Цветовые векторы содержат NaN или бесконечные значения")
-
-    region_count = (vector1.size - 1) // 2
-    a1 = (vector1[:region_count] - 0.5) * COLOR_AB_SCALE
-    b1 = (vector1[region_count:-1] - 0.5) * COLOR_AB_SCALE
-    a2 = (vector2[:region_count] - 0.5) * COLOR_AB_SCALE
-    b2 = (vector2[region_count:-1] - 0.5) * COLOR_AB_SCALE
-    presence1 = float(vector1[-1])
-    presence2 = float(vector2[-1])
-
-    if not 0.0 <= presence1 <= 1.0 or not 0.0 <= presence2 <= 1.0:
-        raise ValueError("Доля цветной площади должна быть в диапазоне 0…1")
-
-    # Средняя по регионам нормированная разница a/b. Нейтральная добавка
-    # не даёт почти серым изображениям давать большое расстояние из-за шума.
-    denominator = np.hypot(a1, b1) + np.hypot(a2, b2) + COLOR_DENOMINATOR
-    region_distance = np.hypot(a1 - a2, b1 - b2) / denominator
-    color_distance = float(np.mean(region_distance))
-
-    # Мелкие цветные watermark и цветовой шум не должны делать визуально
-    # серое изображение цветным.
-    presence_factor = min(1.0, (presence1 + presence2) / COLOR_PRESENCE_AREA)
-    return float(np.clip(color_distance * presence_factor, 0.0, 1.0))
-
 def similarity_images(
     image1: str | Path | BinaryIO,
     image2: str | Path | BinaryIO,
@@ -1905,15 +1856,10 @@ def similarity_images(
         vectors1 = intensities(image1, **kwargs)
         vectors2 = intensities(image2, **kwargs)
 
-    if len(vectors1) != len(vectors2):
-        raise ValueError("Количество характеристик изображений не совпадает")
-
-    distances = [
-        similarity(vectors1[index], vectors2[index])
-        for index in range(len(vectors1) - 1)
+    return [
+        similarity(vectors1[vector_num], vectors2[vector_num])
+        for vector_num in range(len(vectors1))
     ]
-    distances.append(similarity_color(vectors1[-1], vectors2[-1]))
-    return distances
 
 def is_similar_images(
     image1: str | Path | BinaryIO,
