@@ -23,8 +23,11 @@ pip install ".[opencv]"   # быстрый CPU-декодер
 pip install ".[pillow]"   # альтернативный декодер
 pip install ".[vips]"     # libvips
 pip install ".[gpu]"      # CuPy для NVIDIA GPU
-pip install ".[dev]"      # pytest и декодеры для тестов
+pip install ".[dev]"      # pytest, mypy, pyflakes и декодеры для тестов
 ```
+
+Пакет поставляется с маркером `py.typed`, поэтому mypy и другие
+проверяющие видят аннотации типов без отдельных заглушек.
 
 CuPy должен соответствовать установленной версии CUDA. Если CUDA
 недоступна, библиотека автоматически продолжит работу на CPU.
